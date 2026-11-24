@@ -1,0 +1,267 @@
+import {
+  CardCategory,
+  CardRarity,
+  EquipSlot,
+  Language,
+  LocalizedText,
+  SealType,
+  TimeOfDay,
+  WeatherType,
+} from '../types/game';
+
+const UI_STRINGS = {
+  appTitle: {
+    uk: 'Chronicles of the Forgotten Realms',
+    en: 'Chronicles of the Forgotten Realms',
+  },
+  appSubtitle: {
+    uk: 'Текстова настільна фентезійна стратегія · 84 локації · 12 героїв · 300 карт',
+    en: 'Text-Based Tabletop Fantasy Strategy · 84 Locations · 12 Heroes · 300 Cards',
+  },
+  navTable: { uk: 'Ігровий стіл', en: 'Table' },
+  navMap: { uk: 'Карта світу', en: 'World Map' },
+  navInventory: { uk: 'Герой і колода', en: 'Hero & Deck' },
+  navSaves: { uk: 'Збереження', en: 'Saves' },
+  newGame: { uk: 'Нова гра', en: 'New Game' },
+  startGame: { uk: 'Почати пригоду', en: 'Start Game' },
+  continueButton: { uk: 'Продовжити', en: 'Continue' },
+  continueSaved: { uk: 'Продовжити останню гру', en: 'Continue Last Save' },
+  quickTestStart: { uk: 'Тестовий запуск', en: 'Test Preset' },
+  playAgain: { uk: 'Зіграти знову', en: 'Play Again' },
+  gameMode: { uk: 'Режим гри', en: 'Game Mode' },
+  modeSoloAi: { uk: 'Одиночна гра проти ШІ', en: 'Solo vs AI' },
+  modeHotseat: { uk: 'Локальна гра на одному пристрої', en: 'Local Hot-Seat' },
+  playerCount: { uk: 'Кількість гравців (1–6)', en: 'Players (1–6)' },
+  aiOpponents: { uk: 'Суперники ШІ', en: 'AI Opponents' },
+  playerLabel: { uk: 'Гравець', en: 'Player' },
+  aiLabel: { uk: 'ШІ', en: 'AI' },
+  humanLabel: { uk: 'Людина', en: 'Human' },
+  chooseHero: { uk: 'Оберіть героя', en: 'Choose Hero' },
+  seedLabel: { uk: 'Зерно генератора (необов’язково)', en: 'RNG Seed (optional)' },
+  roundLabel: { uk: 'Раунд', en: 'Round' },
+  actionsLabel: { uk: 'Дії', en: 'Actions' },
+  turnOf: { uk: 'Хід:', en: 'Turn:' },
+  endTurn: { uk: 'Завершити хід', en: 'End Turn' },
+  moveAction: { uk: 'Перейти', en: 'Move' },
+  exploreAction: { uk: 'Дослідити', en: 'Explore' },
+  restAction: { uk: 'Відпочити', en: 'Rest' },
+  drawCardAction: { uk: 'Добрати карту', en: 'Draw Card' },
+  useAbilityAction: { uk: 'Здібність героя', en: 'Hero Ability' },
+  challengeSealAction: { uk: 'Випробування Печатки', en: 'Seal Trial' },
+  challengeCitadelAction: { uk: 'Бій із Вартовим Цитаделі', en: 'Fight Citadel Guardian' },
+  challengeVoidLordAction: { uk: 'Фінальна битва: Володар Порожнечі', en: 'Final Battle: Lord of the Void' },
+  finalTrialAction: { uk: 'Пройти фінальне випробування', en: 'Pass Final Trial' },
+  attackAction: { uk: 'Атакувати (d6)', en: 'Attack (d6)' },
+  defendAction: { uk: 'Захищатися', en: 'Defend' },
+  fleeAction: { uk: 'Відступити (d6)', en: 'Flee (d6)' },
+  resolveCheckAction: { uk: 'Кинути d6 на перевірку', en: 'Roll d6 Check' },
+  playCard: { uk: 'Застосувати', en: 'Play' },
+  equipCard: { uk: 'Екіпірувати', en: 'Equip' },
+  unequipCard: { uk: 'Зняти', en: 'Unequip' },
+  buyGearAction: { uk: 'Купити спорядження (15 з.)', en: 'Buy Supply Card (15g)' },
+  connectedLocations: { uk: 'Сусідні локації', en: 'Connected Locations' },
+  currentLocation: { uk: 'Поточна локація', en: 'Current Location' },
+  dangerLevel: { uk: 'Загроза', en: 'Danger' },
+  sealsTitle: { uk: 'Три Печатки', en: 'Three Seals' },
+  finalProgressTitle: { uk: 'Шлях до Цитаделі', en: 'Citadel Progress' },
+  trialsPassed: { uk: 'Фінальні випробування', en: 'Final Trials' },
+  guardiansDefeated: { uk: 'Вартові Цитаделі', en: 'Citadel Guardians' },
+  voidLordStatus: { uk: 'Володар Порожнечі', en: 'Lord of the Void' },
+  defeatedLabel: { uk: 'Переможений', en: 'Defeated' },
+  undefeatedLabel: { uk: 'Живий', en: 'Undefeated' },
+  handTitle: { uk: 'Рука карт', en: 'Hand' },
+  inventoryTitle: { uk: 'Інші предмети', en: 'Other Items' },
+  equipmentTitle: { uk: 'Зброя та обладунок', en: 'Weapon & Armor' },
+  companionsTitle: { uk: 'Супутники', en: 'Companions' },
+  cursesTitle: { uk: 'Активні прокляття', en: 'Active Curses' },
+  marketTitle: { uk: 'Торгівля та послуги', en: 'Trade & Services' },
+  sellCard: { uk: 'Продати', en: 'Sell' },
+  buyCard: { uk: 'Купити', en: 'Buy' },
+  useItemAction: { uk: 'Застосувати', en: 'Use' },
+  recruitAction: { uk: 'Найняти', en: 'Recruit' },
+  dismissCompanionAction: { uk: 'Відпустити', en: 'Dismiss' },
+  discardAction: { uk: 'Скинути', en: 'Discard' },
+  healServiceAction: { uk: 'Лікування у знахаря (+4 HP · 8 з.)', en: 'Healer Service (+4 HP · 8g)' },
+  cleanseServiceAction: { uk: 'Зняти прокляття (12 з.)', en: 'Cleanse Curse (12g)' },
+  refreshMarketAction: { uk: 'Оновити товари (5 з.)', en: 'Refresh Wares (5g)' },
+  inventoryLimitsNote: {
+    uk: 'Ліміти: 1 основна зброя · 1 обладунок · до 3 супутників · до 6 інших предметів',
+    en: 'Limits: 1 Primary Weapon · 1 Armor · up to 3 Companions · up to 6 Other Items',
+  },
+  noCompanions: { uk: 'Супутників ще немає (0/3)', en: 'No companions yet (0/3)' },
+  noCurses: { uk: 'Немає активних проклять', en: 'No active curses' },
+  activationLabel: { uk: 'Активація', en: 'Activation' },
+  durationLabel: { uk: 'Тривалість', en: 'Duration' },
+  discardRuleLabel: { uk: 'Скидання', en: 'Discard' },
+  adventureDeckLabel: { uk: 'Пригоди', en: 'Adventure Deck' },
+  chronicleTitle: { uk: 'Літопис подій', en: 'Chronicle Log' },
+  worldStateTitle: { uk: 'Стан світу', en: 'World State' },
+  partyTitle: { uk: 'Загін і суперники', en: 'Party & Rivals' },
+  deckRemaining: { uk: 'У колоді', en: 'Deck' },
+  discardCount: { uk: 'Скид', en: 'Discard' },
+  lastRoll: { uk: 'Останній d6', en: 'Last d6' },
+  hpLabel: { uk: 'Здоров’я', en: 'HP' },
+  strengthLabel: { uk: 'Сила', en: 'Strength' },
+  intellectLabel: { uk: 'Інтелект', en: 'Intellect' },
+  fateLabel: { uk: 'Доля', en: 'Fate' },
+  armorLabel: { uk: 'Броня', en: 'Armor' },
+  goldLabel: { uk: 'Золото', en: 'Gold' },
+  experienceLabel: { uk: 'Досвід', en: 'Experience' },
+  upgradeStrengthAction: { uk: '+1 Сила (3 досвіду)', en: '+1 Strength (3 XP)' },
+  upgradeIntellectAction: { uk: '+1 Інтелект (3 досвіду)', en: '+1 Intellect (3 XP)' },
+  heroRosterTitle: { uk: '12 Героїв Хроніки', en: '12 Heroes of the Chronicle' },
+  heroStoryLabel: { uk: 'Історія', en: 'Backstory' },
+  startingGearLabel: { uk: 'Початкове спорядження', en: 'Starting Equipment' },
+  startingResourcesLabel: { uk: 'Початкові ресурси', en: 'Starting Resources' },
+  statCapsNote: {
+    uk: 'Максимуми: Здоров’я 10 · Доля 5 · Сила та Інтелект 12',
+    en: 'Max Caps: HP 10 · Fate 5 · Strength & Intellect 12',
+  },
+  emptyHand: { uk: 'У руці немає карт', en: 'No cards in hand' },
+  emptyInventory: { uk: 'Інвентар порожній', en: 'Inventory is empty' },
+  emptySlot: { uk: 'Порожній слот', en: 'Empty slot' },
+  saveNow: { uk: 'Зберегти гру', en: 'Save Game' },
+  saveLabelPlaceholder: { uk: 'Назва збереження', en: 'Save slot name' },
+  loadSave: { uk: 'Завантажити', en: 'Load' },
+  deleteSave: { uk: 'Видалити', en: 'Delete' },
+  noSaves: { uk: 'Локальних збережень у IndexedDB ще немає.', en: 'No local saves stored in IndexedDB yet.' },
+  savedToast: { uk: 'Гру збережено в IndexedDB', en: 'Game saved to IndexedDB' },
+  victoryTitle: { uk: 'Перемога над Порожнечею!', en: 'Victory Over the Void!' },
+  victoryDesc: {
+    uk: 'Три Печатки зібрано, випробування пройдено, Вартових Цитаделі та Володаря Порожнечі подолано.',
+    en: 'The Three Seals are united, the final trials passed, and the Citadel Guardians and Lord of the Void defeated.',
+  },
+  defeatTitle: { uk: 'Хроніка обірвалась', en: 'The Chronicle Ends' },
+  defeatDesc: {
+    uk: 'Усі герої впали під натиском Забутих Земель.',
+    en: 'All heroes have fallen across the Forgotten Realms.',
+  },
+  aiThinking: { uk: 'Хід ШІ…', en: 'AI taking turn…' },
+  regionFilter: { uk: 'Регіон', en: 'Region' },
+  allLocationsCount: { uk: 'Локацій відкрито', en: 'Locations Discovered' },
+  cardCodexTitle: { uk: 'Каталог усіх 300 карт', en: 'All 300 Cards Codex' },
+  searchCards: { uk: 'Пошук карти…', en: 'Search cards…' },
+  mainGoalTitle: { uk: 'Головна мета кампанії', en: 'Campaign Objective' },
+  mainGoalText: {
+    uk: '1) Зберіть 3 Печатки у трьох регіонах · 2) Пройдіть 3 фінальні випробування · 3) Переможіть 2 Вартових Цитаделі · 4) Здолайте Володаря Порожнечі на Троні Порожнечі.',
+    en: '1) Gather 3 Seals across the three regions · 2) Pass 3 Final Trials · 3) Defeat 2 Citadel Guardians · 4) Vanquish the Lord of the Void at the Throne of the Void.',
+  },
+  activeEventLabel: { uk: 'Світова подія', en: 'World Event' },
+  noActiveEvent: { uk: 'Спокійна доба', en: 'Calm Era' },
+  rollMoveAction: { uk: 'Кинути d6 на рух', en: 'Roll d6 to Move' },
+  stepsRemainingLabel: { uk: 'Залишилось кроків', en: 'Steps Remaining' },
+  chooseBranch: { uk: 'Оберіть наступний маршрут', en: 'Choose Next Route' },
+  stopAtLocation: { uk: 'Зупинитись і активувати подію', en: 'Stop & Trigger Event' },
+  challengeGateGuardian: { uk: 'Бій із Охоронцем Брами', en: 'Fight Gate Guardian' },
+  lockedRoute: { uk: 'Закритий маршрут', en: 'Locked Route' },
+  openRoute: { uk: 'Відкритий перехід', en: 'Open Route' },
+  allRegionsLabel: { uk: 'Усі 84 локації', en: 'All 84 Locations' },
+  sectorLabel: { uk: 'Сектор', en: 'Sector' },
+  dayEffectLabel: { uk: 'День', en: 'Day' },
+  nightEffectLabel: { uk: 'Ніч', en: 'Night' },
+  weatherModLabel: { uk: 'Погода тут', en: 'Local Weather' },
+  accessConditionLabel: { uk: 'Доступ', en: 'Access' },
+  graphValidLabel: { uk: 'Граф перевірено: 84/84 зв’язні', en: 'Graph Verified: 84/84 Connected' },
+  gateDefeatedLabel: { uk: 'Охоронець Брами', en: 'Gate Guardian' },
+  resolveOnTable: { uk: 'Перейти до столу для розіграшу події/бою', en: 'Return to Table to Resolve Event/Combat' },
+  turnCycleTitle: { uk: 'Цикл ходу', en: 'Turn Cycle' },
+  stepTurnStart: { uk: '1. Початок ходу', en: '1. Turn Start' },
+  stepApplyEffects: { uk: '2. Ефекти', en: '2. Effects' },
+  stepDiceRoll: { uk: '3. Кидок d6', en: '3. d6 Roll' },
+  stepMovement: { uk: '4. Переміщення', en: '4. Movement' },
+  stepDestination: { uk: '5. Локація', en: '5. Destination' },
+  stepEncounter: { uk: '6. Пригода', en: '6. Encounter' },
+  stepTurnEnd: { uk: '7. Завершення', en: '7. End Turn' },
+  stepTurnHandoff: { uk: '8. Передача', en: '8. Handoff' },
+  fateRerollAction: { uk: 'Витратити 1 Долю: перекинути d6', en: 'Spend 1 Fate: Reroll d6' },
+  fateRerollLocked: {
+    uk: 'Долю вже використано для цього кидка — другий результат обов’язковий.',
+    en: 'Fate already spent on this roll — second result is mandatory.',
+  },
+  fateRerollUnavailableMoved: {
+    uk: 'Перекидання неможливе після початку руху маршрутом.',
+    en: 'Cannot reroll after already stepping along a route.',
+  },
+  fateNoPoints: { uk: 'Недостатньо очок Долі (0).', en: 'No Fate points remaining (0).' },
+  dicePanelTitle: { uk: 'Кубик d6 та Доля', en: 'd6 Die & Fate' },
+  diceHistoryTitle: { uk: 'Історія кидків d6', en: 'd6 Roll History' },
+  noDiceRollsYet: { uk: 'Кидків ще не було.', en: 'No dice rolls recorded yet.' },
+  confirmCheckAction: { uk: 'Підтвердити результат', en: 'Confirm Result' },
+  rollCheckDiceAction: { uk: 'Кинути d6 на перевірку', en: 'Roll d6 for Check' },
+} as const;
+
+export type UiKey = keyof typeof UI_STRINGS;
+
+export function t(lang: Language, key: UiKey): string {
+  return UI_STRINGS[key][lang];
+}
+
+export function pickText(lang: Language, text: LocalizedText): string {
+  return text[lang];
+}
+
+export function formatTimeOfDay(lang: Language, time: TimeOfDay): string {
+  const map: Record<TimeOfDay, LocalizedText> = {
+    dawn: { uk: 'Світанок', en: 'Dawn' },
+    day: { uk: 'День', en: 'Day' },
+    dusk: { uk: 'Сутінки', en: 'Dusk' },
+    night: { uk: 'Ніч', en: 'Night' },
+  };
+  return map[time][lang];
+}
+
+export function formatWeather(lang: Language, weather: WeatherType): string {
+  const map: Record<WeatherType, LocalizedText> = {
+    clear: { uk: 'Ясно', en: 'Clear' },
+    mist: { uk: 'Густий туман', en: 'Thick Mist' },
+    rain: { uk: 'Злива', en: 'Heavy Rain' },
+    ash_storm: { uk: 'Попеляста буря', en: 'Ash Storm' },
+    frost_wind: { uk: 'Крижаний вітер', en: 'Frost Wind' },
+    void_eclipse: { uk: 'Затемнення Порожнечі', en: 'Void Eclipse' },
+  };
+  return map[weather][lang];
+}
+
+export function formatSealName(lang: Language, seal: SealType): string {
+  const map: Record<SealType, LocalizedText> = {
+    seal_power: { uk: 'Печатка Сили', en: 'Seal of Power' },
+    seal_wisdom: { uk: 'Печатка Мудрості', en: 'Seal of Wisdom' },
+    seal_fate: { uk: 'Печатка Долі', en: 'Seal of Fate' },
+  };
+  return map[seal][lang];
+}
+
+export function formatCardCategory(lang: Language, cat: CardCategory): string {
+  const map: Record<CardCategory, LocalizedText> = {
+    adventure: { uk: 'Пригода', en: 'Adventure' },
+    enemy: { uk: 'Ворог', en: 'Enemy' },
+    item: { uk: 'Предмет', en: 'Item' },
+    weapon: { uk: 'Зброя', en: 'Weapon' },
+    armor: { uk: 'Обладунок', en: 'Armor' },
+    spell: { uk: 'Закляття', en: 'Spell' },
+    companion: { uk: 'Супутник', en: 'Companion' },
+    event: { uk: 'Подія', en: 'Event' },
+    curse: { uk: 'Прокляття', en: 'Curse' },
+    legendary_artifact: { uk: 'Легендарний артефакт', en: 'Legendary Artifact' },
+  };
+  return map[cat][lang];
+}
+
+export function formatCardRarity(lang: Language, rarity: CardRarity): string {
+  const map: Record<CardRarity, LocalizedText> = {
+    common: { uk: 'Звичайна', en: 'Common' },
+    uncommon: { uk: 'Незвичайна', en: 'Uncommon' },
+    rare: { uk: 'Рідкісна', en: 'Rare' },
+    legendary: { uk: 'Легендарна', en: 'Legendary' },
+  };
+  return map[rarity][lang];
+}
+
+export function formatEquipSlot(lang: Language, slot: EquipSlot): string {
+  const map: Record<EquipSlot, LocalizedText> = {
+    weapon: { uk: 'Зброя', en: 'Weapon' },
+    armor: { uk: 'Обладунок', en: 'Armor' },
+    talisman: { uk: 'Талісман', en: 'Talisman' },
+  };
+  return map[slot][lang];
+}

@@ -1,0 +1,80 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Cormorant Garamond", Georgia, serif;
+  --font-sans: "Manrope", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+@layer base {
+  html,
+  body {
+    background-color: #0e1014;
+    color: #e8e3d9;
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  h1,
+  h2,
+  h3,
+  .font-display {
+    font-family: var(--font-display);
+  }
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Dark fantasy double-hairline brass/obsidian frame */
+.ornate-frame {
+  border: 1px solid rgba(180, 140, 74, 0.34);
+  box-shadow:
+    inset 0 0 0 1px rgba(180, 140, 74, 0.12),
+    0 12px 28px -12px rgba(0, 0, 0, 0.65);
+}
+
+/* Aged parchment panel for the Adventure Journal & Lore Scrolls */
+.parchment-panel {
+  background: linear-gradient(175deg, #efe4cc 0%, #e5d4b2 100%);
+  color: #241b11;
+  border: 1px solid #9d7f4e;
+  box-shadow:
+    inset 0 0 24px rgba(122, 92, 46, 0.16),
+    inset 0 0 0 1px rgba(122, 92, 46, 0.25),
+    0 10px 24px -10px rgba(0, 0, 0, 0.6);
+}
+
+@keyframes diceTumble {
+  0% {
+    transform: rotate(0deg) scale(0.92);
+  }
+  25% {
+    transform: rotate(-14deg) scale(1.08);
+  }
+  55% {
+    transform: rotate(12deg) scale(1.04);
+  }
+  80% {
+    transform: rotate(-5deg) scale(1.01);
+  }
+  100% {
+    transform: rotate(0deg) scale(1);
+  }
+}
+
+.animate-dice-tumble {
+  animation: diceTumble 0.42s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "Chronicles of the Forgotten Realms",
+  "description": "A bilingual (UA/EN) browser-based tabletop fantasy strategy RPG across 84 locations, 12 heroes, and 300 cards.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

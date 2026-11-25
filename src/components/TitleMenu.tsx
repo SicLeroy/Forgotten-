@@ -4,8 +4,17 @@ import { CARD_MAP } from '../data/cards';
 import { HEROES, HERO_MAP } from '../data/heroes';
 import { REGIONS } from '../data/regions';
 import { TEST_SCENARIO_PRESETS } from '../data/testFixtures';
+import { AiManager } from '../engine/AiManager';
 import { LocalizationManager } from '../i18n/LocalizationManager';
-import { GameMode, HERO_STAT_LIMITS, Language, NewGameConfig, SaveSlotSummary } from '../types/game';
+import {
+  AiBehaviorStyle,
+  AiDifficulty,
+  GameMode,
+  HERO_STAT_LIMITS,
+  Language,
+  NewGameConfig,
+  SaveSlotSummary,
+} from '../types/game';
 import { HeroAvatar } from './HeroAvatar';
 import { OrnamentalDivider } from './OrnamentalSymbols';
 
@@ -26,6 +35,15 @@ export const TitleMenu: React.FC<TitleMenuProps> = ({
 }) => {
   const [mode, setMode] = useState<GameMode>('solo_ai');
   const [totalPlayers, setTotalPlayers] = useState<number>(2);
+  const [aiDifficulty, setAiDifficulty] = useState<AiDifficulty>('normal');
+  const [aiStyles, setAiStyles] = useState<AiBehaviorStyle[]>([
+    'conqueror',
+    'scholar',
+    'merchant_tactician',
+    'warden',
+    'conqueror',
+    'scholar',
+  ]);
   const [seedInput, setSeedInput] = useState<string>('');
   const [selectedHeroes, setSelectedHeroes] = useState<string[]>([
     'hero_01',
@@ -63,6 +81,10 @@ export const TitleMenu: React.FC<TitleMenuProps> = ({
     setSelectedHeroes(updated);
     setInspectedHeroId(heroId);
 
+    const updatedStyles = [...aiStyles];
+    updatedStyles[slotIdx] = AiManager.assignDefaultStyle(heroId, slotIdx);
+    setAiStyles(updatedStyles);
+
     const hero = HERO_MAP.get(heroId);
     if (hero) {
       const updatedNames = [...playerNames];
@@ -78,6 +100,12 @@ export const TitleMenu: React.FC<TitleMenuProps> = ({
     setPlayerNames(updated);
   };
 
+  const handleStyleChange = (slotIdx: number, style: AiBehaviorStyle) => {
+    const updated = [...aiStyles];
+    updated[slotIdx] = style;
+    setAiStyles(updated);
+  };
+
   const handleStart = (e: React.FormEvent) => {
     e.preventDefault();
     const parsedSeed = seedInput.trim() ? Number(seedInput.trim()) : undefined;
@@ -89,12 +117,15 @@ export const TitleMenu: React.FC<TitleMenuProps> = ({
         name: playerNames[idx]?.trim() || fallbackHero.name[lang],
         heroId,
         isAI,
+        aiDifficulty: isAI ? aiDifficulty : undefined,
+        aiStyle: isAI ? aiStyles[idx] : undefined,
       };
     });
 
     onStartGame({
       mode,
       seed: parsedSeed,
+      aiDifficulty,
       playerConfigs,
     });
   };
@@ -264,6 +295,34 @@ export const TitleMenu: React.FC<TitleMenuProps> = ({
               </div>
             </div>
 
+            {mode === 'solo_ai' && totalPlayers >= 2 && (
+              <div>
+                <label className="block text-xs font-medium text-stone-400 mb-1.5">
+                  {t(lang, 'aiDifficultyLabel')}
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  {([
+                    { id: 'easy', label: t(lang, 'aiEasyLabel') },
+                    { id: 'normal', label: t(lang, 'aiNormalLabel') },
+                    { id: 'hard', label: t(lang, 'aiHardLabel') },
+                  ] as const).map((diff) => (
+                    <button
+                      key={diff.id}
+                      type="button"
+                      onClick={() => setAiDifficulty(diff.id)}
+                      className={`rounded border py-2 text-xs font-semibold transition-colors min-h-[38px] ${
+                        aiDifficulty === diff.id
+                          ? 'border-amber-500 bg-amber-600/20 text-amber-300'
+                          : 'border-stone-800 bg-[#111317] text-stone-300 hover:border-stone-600'
+                      }`}
+                    >
+                      {diff.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Player Slots */}
             <div className="space-y-3">
               {Array.from({ length: totalPlayers }, (_, idx) => {
@@ -307,22 +366,44 @@ export const TitleMenu: React.FC<TitleMenuProps> = ({
                       </div>
                     </div>
 
-                    <div className="sm:col-span-4">
-                      <label className="block text-xs text-stone-400 mb-1">
-                        {t(lang, 'chooseHero')}
-                      </label>
-                      <select
-                        value={selectedHeroes[idx]}
-                        onChange={(e) => handleHeroChange(idx, e.target.value)}
-                        onClick={(e) => e.stopPropagation()}
-                        className="w-full rounded border border-stone-800 bg-[#171b22] px-2.5 py-1.5 text-sm text-stone-100 min-h-[38px] focus:border-amber-500 focus:outline-none"
-                      >
-                        {HEROES.map((h) => (
-                          <option key={h.id} value={h.id}>
-                            {pickText(lang, h.className)} — {pickText(lang, h.name)}
-                          </option>
-                        ))}
-                      </select>
+                    <div className="sm:col-span-4 space-y-2">
+                      <div>
+                        <label className="block text-xs text-stone-400 mb-1">
+                          {t(lang, 'chooseHero')}
+                        </label>
+                        <select
+                          value={selectedHeroes[idx]}
+                          onChange={(e) => handleHeroChange(idx, e.target.value)}
+                          onClick={(e) => e.stopPropagation()}
+                          className="w-full rounded border border-stone-800 bg-[#171b22] px-2.5 py-1.5 text-sm text-stone-100 min-h-[38px] focus:border-amber-500 focus:outline-none"
+                        >
+                          {HEROES.map((h) => (
+                            <option key={h.id} value={h.id}>
+                              {pickText(lang, h.className)} — {pickText(lang, h.name)}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      {isAI && (
+                        <div>
+                          <label className="block text-[11px] text-stone-400 mb-1">
+                            {t(lang, 'aiStyleLabel')}
+                          </label>
+                          <select
+                            value={aiStyles[idx]}
+                            onChange={(e) =>
+                              handleStyleChange(idx, e.target.value as AiBehaviorStyle)
+                            }
+                            onClick={(e) => e.stopPropagation()}
+                            className="w-full rounded border border-stone-800 bg-[#12151b] px-2 py-1 text-xs text-amber-200 min-h-[34px] focus:border-amber-500 focus:outline-none"
+                          >
+                            <option value="conqueror">{t(lang, 'aiStyleConqueror')}</option>
+                            <option value="scholar">{t(lang, 'aiStyleScholar')}</option>
+                            <option value="merchant_tactician">{t(lang, 'aiStyleTactician')}</option>
+                            <option value="warden">{t(lang, 'aiStyleWarden')}</option>
+                          </select>
+                        </div>
+                      )}
                     </div>
 
                     <div className="sm:col-span-4 text-xs text-stone-400 space-y-1">

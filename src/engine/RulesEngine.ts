@@ -37,6 +37,7 @@ import {
   computeEquipmentCombatAttack,
   getActivePlayerFromState,
 } from './GameState';
+import { AiManager } from './AiManager';
 import { DayNightManager } from './DayNightManager';
 import { NavigationGraph } from './NavigationGraph';
 import { NpcManager } from './NpcManager';
@@ -734,6 +735,8 @@ export const RulesEngine = {
         id: `player_${idx + 1}`,
         name: pc.name.trim() || hero.name.en,
         isAI: pc.isAI,
+        aiDifficulty: pc.isAI ? (pc.aiDifficulty ?? config.aiDifficulty ?? 'normal') : undefined,
+        aiStyle: pc.isAI ? (pc.aiStyle ?? AiManager.assignDefaultStyle(hero.id, idx)) : undefined,
         heroId: hero.id,
         locationId: hero.startingLocationId,
         hp: Math.min(HERO_STAT_LIMITS.maxHp, hero.baseStats.hp),
@@ -801,6 +804,8 @@ export const RulesEngine = {
       diceHistory: [],
       winnerPlayerId: null,
       chronicle: [],
+      aiDifficulty: config.aiDifficulty ?? 'normal',
+      aiDecisionLog: [],
       updatedAt: Date.now(),
     };
 
@@ -3029,144 +3034,10 @@ export const RulesEngine = {
   },
 
   /**
-   * Executes one full deterministic AI turn for the active AI player.
+   * Executes one full deterministic AI turn for the active AI player via AiManager.
    */
   runAiTurn(state: GameState): GameState {
-    let current = cloneState(state);
-    const active = getActivePlayer(current);
-    if (!active.isAI || current.phase !== 'PLAYING') return current;
-
-    // 1. Spend XP to upgrade primary stat if >= 3, equip gear, or heal if low HP
-    const currActive = getActivePlayer(current);
-    if (currActive.experience >= HERO_STAT_LIMITS.xpPerStatUpgrade) {
-      const targetStat = currActive.intellect > currActive.strength ? 'intellect' : 'strength';
-      const upgraded = RulesEngine.upgradeStat(current, targetStat);
-      if (!upgraded.error) current = upgraded.state;
-    }
-
-    for (const cardId of [...getActivePlayer(current).hand]) {
-      const card = CARD_MAP.get(cardId);
-      if (!card) continue;
-      if (card.equipSlot && !getActivePlayer(current).equipment[card.equipSlot]) {
-        current = RulesEngine.playCard(current, cardId).state;
-      } else if (!card.combatOnly && card.effect.healHp && getActivePlayer(current).hp <= getActivePlayer(current).maxHp - 3) {
-        current = RulesEngine.playCard(current, cardId).state;
-      }
-    }
-
-    // 2. Use actions intelligently
-    let safety = 0;
-    while (
-      current.phase === 'PLAYING' &&
-      getActivePlayer(current).id === active.id &&
-      safety < 12
-    ) {
-      safety += 1;
-      const p = getActivePlayer(current);
-
-      if (current.turnPhase === 'ENCOUNTER') {
-        current = RulesEngine.resolveEncounter(current).state;
-        continue;
-      }
-
-      if (current.turnPhase === 'COMBAT') {
-        if (!p.abilityUsedThisTurn) {
-          current = RulesEngine.useHeroAbility(current).state;
-          continue;
-        }
-        const combatCard = p.hand.find((cid) => {
-          const c = CARD_MAP.get(cid);
-          return c && c.combatOnly;
-        });
-        if (combatCard) {
-          current = RulesEngine.playCard(current, combatCard).state;
-          continue;
-        }
-        current = RulesEngine.combatAttack(current).state;
-        continue;
-      }
-
-      if (p.actionsRemaining <= 0) break;
-
-      const loc = LOCATION_MAP.get(p.locationId)!;
-      if (p.hp <= Math.floor(p.maxHp * 0.45)) {
-        current = RulesEngine.restAtLocation(current).state;
-        continue;
-      }
-
-      if (loc.sealGuardianId && loc.sealReward && !p.seals.includes(loc.sealReward)) {
-        current = RulesEngine.challengeSealGuardian(current).state;
-        continue;
-      }
-
-      if (loc.isGateGuardianLair && !p.gateGuardianDefeated) {
-        current = RulesEngine.challengeGateGuardian(current).state;
-        continue;
-      }
-
-      if (
-        p.seals.length === 3 &&
-        p.finalTrialsPassed < 3 &&
-        (loc.regionId === 'reg_abyssal_citadel' || loc.terrain === 'shrine')
-      ) {
-        current = RulesEngine.attemptFinalTrial(current).state;
-        continue;
-      }
-
-      const citadelEnemyId =
-        loc.id === 'loc_80'
-          ? 'enemy_citadel_sentinel'
-          : loc.id === 'loc_81'
-            ? 'enemy_citadel_inquisitor'
-            : null;
-      if (
-        citadelEnemyId &&
-        p.seals.length === 3 &&
-        p.finalTrialsPassed >= 3 &&
-        p.citadelGuardiansDefeated < 2 &&
-        !(p.defeatedCitadelGuardianIds ?? []).includes(citadelEnemyId)
-      ) {
-        current = RulesEngine.challengeCitadelGuardian(current).state;
-        continue;
-      }
-
-      if (
-        loc.isFinalBossLair &&
-        p.seals.length === 3 &&
-        p.finalTrialsPassed >= 3 &&
-        p.citadelGuardiansDefeated >= 2
-      ) {
-        current = RulesEngine.challengeVoidLord(current).state;
-        continue;
-      }
-
-      let goalLocId = 'loc_28';
-      if (!p.seals.includes('seal_power')) goalLocId = 'loc_28';
-      else if (!p.gateGuardianDefeated) goalLocId = 'loc_42';
-      else if (!p.seals.includes('seal_fate')) goalLocId = 'loc_66';
-      else if (!p.seals.includes('seal_wisdom')) goalLocId = 'loc_71';
-      else if (p.finalTrialsPassed < 3) goalLocId = 'loc_73';
-      else if (p.citadelGuardiansDefeated < 2) {
-        const defeatedIds = p.defeatedCitadelGuardianIds ?? [];
-        goalLocId = !defeatedIds.includes('enemy_citadel_sentinel') ? 'loc_80' : 'loc_81';
-      } else {
-        goalLocId = 'loc_84';
-      }
-
-      const bestNeighbor = NavigationGraph.findNextStepToward(p, p.locationId, goalLocId);
-
-      if (p.locationId !== goalLocId && bestNeighbor) {
-        current = RulesEngine.moveToLocation(current, bestNeighbor).state;
-      } else {
-        current = RulesEngine.exploreLocation(current).state;
-      }
-    }
-
-    if (current.phase === 'PLAYING' && current.turnPhase === 'ACTION' && getActivePlayer(current).id === active.id) {
-      current = RulesEngine.endTurn(current).state;
-    }
-
-    return current;
+    return AiManager.runTurn(state, RulesEngine);
   },
 };
 

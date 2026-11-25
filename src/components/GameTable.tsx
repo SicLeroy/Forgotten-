@@ -63,6 +63,7 @@ import { CombatPanel } from './CombatPanel';
 import { DiceDieSvg, DiceRollerPanel } from './DiceRollerPanel';
 import { HeroAvatar } from './HeroAvatar';
 import { OrnamentalDivider, SealSigil } from './OrnamentalSymbols';
+import { resolveWorldEventVisuals, WORLD_EVENT_VISUAL_MAP } from '../utils/worldEventVisuals';
 
 const {
   formatSealName,
@@ -317,6 +318,7 @@ export const GameTable: React.FC<GameTableProps> = ({
   const activeWeatherEffect = currentLocation.weatherModifiers[state.weather];
 
   const activeMajorEvents = WorldEventManager.getActiveEvents(state);
+  const visualFeedback = resolveWorldEventVisuals(activeMajorEvents);
   const marketPriceModifier = WorldEventManager.getMarketPriceModifier(state);
   const supplyCost = Math.max(4, 15 + marketPriceModifier);
   const healingModifier = WorldEventManager.getHealingModifier(state);
@@ -344,7 +346,19 @@ export const GameTable: React.FC<GameTableProps> = ({
       : 0;
 
   return (
-    <main className="mx-auto max-w-[1440px] px-4 py-5 sm:px-6">
+    <>
+      {visualFeedback.active &&
+        visualFeedback.overlayClasses.map((overlayClass, idx) => (
+          <div
+            key={`${visualFeedback.transitionKey}_${idx}`}
+            aria-hidden="true"
+            className={`pointer-events-none fixed inset-0 z-10 transition-opacity duration-500 ${overlayClass}`}
+          />
+        ))}
+      <main
+        data-world-fx={visualFeedback.primaryEffectKey}
+        className={`relative mx-auto max-w-[1440px] px-4 py-5 sm:px-6 overflow-x-clip ${visualFeedback.containerClassName}`}
+      >
       {/* Workspace World Toolbar with 6-Round Day/Night & Regional Weather Indicators */}
       <div className="mb-5 rounded-lg ornate-frame bg-[#15181f] px-4 py-3 text-xs text-stone-300 space-y-2.5">
         <div className="flex flex-wrap items-center justify-between gap-4">
@@ -908,11 +922,12 @@ export const GameTable: React.FC<GameTableProps> = ({
                       ? Math.max(0, Math.min(100, Math.round((evt.interventionProgress / evt.requiredProgress) * 100)))
                       : 0;
                   const interveneCheck = WorldEventManager.canHeroIntervene(state, activePlayer, evt.id);
+                  const accentClass = WORLD_EVENT_VISUAL_MAP[evt.id].cardAccentClass;
 
                   return (
                     <div
                       key={evt.id}
-                      className="rounded-md border border-rose-900/50 bg-[#12141b] p-3.5 text-xs space-y-2.5 flex flex-col justify-between"
+                      className={`rounded-md border bg-[#12141b] p-3.5 text-xs space-y-2.5 flex flex-col justify-between transition-shadow ${accentClass}`}
                     >
                       <div className="space-y-2">
                         <div className="flex items-start justify-between gap-2">
@@ -1739,6 +1754,7 @@ export const GameTable: React.FC<GameTableProps> = ({
           </div>
         </aside>
       </div>
-    </main>
+      </main>
+    </>
   );
 };

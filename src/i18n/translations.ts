@@ -251,6 +251,15 @@ const UI_STRINGS = {
   chronicleTabAll: { uk: 'Усі', en: 'All' },
   chronicleTabGlobal: { uk: 'Глобальні події', en: 'Global Events' },
   chronicleTabLocal: { uk: 'Локальні пригоди', en: 'Local Adventures' },
+  aiDifficultyLabel: { uk: 'Складність ШІ', en: 'AI Difficulty' },
+  aiEasyLabel: { uk: 'Легкий', en: 'Easy' },
+  aiNormalLabel: { uk: 'Нормальний', en: 'Normal' },
+  aiHardLabel: { uk: 'Складний', en: 'Hard' },
+  aiStyleLabel: { uk: 'Стиль бота', en: 'Bot Style' },
+  aiStyleConqueror: { uk: 'Завойовник', en: 'Conqueror' },
+  aiStyleScholar: { uk: 'Дослідник', en: 'Scholar' },
+  aiStyleTactician: { uk: 'Стратег', en: 'Tactician' },
+  aiStyleWarden: { uk: 'Вартовий', en: 'Warden' },
 } as const;
 
 export type UiKey = keyof typeof UI_STRINGS;

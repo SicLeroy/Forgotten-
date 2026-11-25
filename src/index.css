@@ -69,6 +69,287 @@
   animation: diceTumble 0.42s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
+/* ============================================================================
+ * Major World Event Atmospheric Visual Feedback (keyframes & CSS filters)
+ * ============================================================================ */
+
+@keyframes arcaneStormShake {
+  0%, 82%, 100% {
+    transform: translate3d(0, 0, 0);
+  }
+  84% {
+    transform: translate3d(-2px, 1px, 0);
+  }
+  86% {
+    transform: translate3d(3px, -2px, 0);
+  }
+  88% {
+    transform: translate3d(-3px, 1px, 0);
+  }
+  90% {
+    transform: translate3d(2px, -1px, 0);
+  }
+  92% {
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes arcaneLightningFlash {
+  0%, 80%, 86%, 91%, 100% {
+    opacity: 0.25;
+  }
+  83% {
+    opacity: 0.72;
+  }
+  88% {
+    opacity: 0.56;
+  }
+}
+
+@keyframes bloodEclipseFilter {
+  0%, 100% {
+    filter: brightness(0.86) contrast(1.12) saturate(1.15) sepia(0.18) hue-rotate(-14deg);
+  }
+  50% {
+    filter: brightness(0.76) contrast(1.2) saturate(1.26) sepia(0.26) hue-rotate(-20deg);
+  }
+}
+
+@keyframes bloodEclipsePulse {
+  0%, 100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 0.85;
+  }
+}
+
+@keyframes dragonTremor {
+  0%, 86%, 100% {
+    transform: translate3d(0, 0, 0);
+    filter: contrast(1.04) saturate(1.08);
+  }
+  89% {
+    transform: translate3d(-2px, 2px, 0);
+    filter: contrast(1.08) saturate(1.14);
+  }
+  92% {
+    transform: translate3d(2px, -1px, 0);
+  }
+  95% {
+    transform: translate3d(-1px, 1px, 0);
+  }
+}
+
+@keyframes demonRiftSurge {
+  0%, 100% {
+    filter: contrast(1.07) saturate(1.15);
+  }
+  50% {
+    filter: contrast(1.14) saturate(1.25) hue-rotate(-6deg);
+  }
+}
+
+@keyframes curseMiasmaPulse {
+  0%, 100% {
+    filter: saturate(0.92) brightness(0.95);
+  }
+  50% {
+    filter: saturate(1.06) brightness(0.89) hue-rotate(10deg);
+  }
+}
+
+@keyframes plagueGloomFilter {
+  0%, 100% {
+    filter: saturate(0.68) contrast(1.06) brightness(0.88) sepia(0.14);
+  }
+  50% {
+    filter: saturate(0.56) contrast(1.1) brightness(0.82) sepia(0.2);
+  }
+}
+
+@keyframes undeadMarchTremor {
+  0%, 74%, 100% {
+    transform: translate3d(0, 0, 0);
+    filter: saturate(0.78) contrast(1.08) brightness(0.92);
+  }
+  77% {
+    transform: translate3d(0, 2px, 0);
+  }
+  81% {
+    transform: translate3d(0, 0, 0);
+  }
+  85% {
+    transform: translate3d(0, 2px, 0);
+  }
+}
+
+@keyframes caravanDustHaze {
+  0%, 100% {
+    filter: sepia(0.18) brightness(0.95) contrast(1.03);
+  }
+  50% {
+    filter: sepia(0.26) brightness(0.91) contrast(1.05);
+  }
+}
+
+@keyframes monsterUprisingThrob {
+  0%, 84%, 100% {
+    transform: translate3d(0, 0, 0);
+    filter: contrast(1.06) saturate(1.1);
+  }
+  88% {
+    transform: translate3d(-1.5px, 1px, 0);
+    filter: contrast(1.12) saturate(1.2);
+  }
+  92% {
+    transform: translate3d(1.5px, -1px, 0);
+  }
+}
+
+@keyframes templeAuraGlow {
+  0%, 100% {
+    filter: brightness(0.97) contrast(1.04) saturate(1.08);
+  }
+  50% {
+    filter: brightness(1.03) contrast(1.08) saturate(1.18);
+  }
+}
+
+@keyframes overlayBreathe {
+  0%, 100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 0.78;
+  }
+}
+
+/* Container Effects */
+.world-fx-arcane-storm {
+  animation: arcaneStormShake 5.5s ease-in-out infinite;
+  will-change: transform;
+}
+
+.world-fx-blood-eclipse {
+  animation: bloodEclipseFilter 6s ease-in-out infinite;
+}
+
+.world-fx-dragon-awakening {
+  animation: dragonTremor 6.5s ease-in-out infinite;
+  will-change: transform, filter;
+}
+
+.world-fx-demon-rift {
+  animation: demonRiftSurge 5s ease-in-out infinite;
+}
+
+.world-fx-spreading-curse {
+  animation: curseMiasmaPulse 7s ease-in-out infinite;
+}
+
+.world-fx-black-plague {
+  animation: plagueGloomFilter 7.5s ease-in-out infinite;
+}
+
+.world-fx-undead-invasion {
+  animation: undeadMarchTremor 4.8s ease-in-out infinite;
+  will-change: transform, filter;
+}
+
+.world-fx-vanishing-caravans {
+  animation: caravanDustHaze 8s ease-in-out infinite;
+}
+
+.world-fx-monster-uprising {
+  animation: monsterUprisingThrob 5.2s ease-in-out infinite;
+  will-change: transform, filter;
+}
+
+.world-fx-ancient-temple {
+  animation: templeAuraGlow 6.5s ease-in-out infinite;
+}
+
+.world-stage-2 {
+  animation-duration: 4.2s;
+}
+
+.world-stage-3 {
+  animation-duration: 3.1s;
+}
+
+/* Non-blocking Atmospheric Overlays */
+.world-overlay-arcane-storm {
+  background:
+    radial-gradient(circle at 22% 18%, rgba(56, 189, 248, 0.22), transparent 52%),
+    radial-gradient(circle at 82% 24%, rgba(168, 85, 247, 0.18), transparent 48%),
+    inset 0 0 90px rgba(14, 165, 233, 0.18);
+  animation: arcaneLightningFlash 5.5s ease-in-out infinite;
+}
+
+.world-overlay-blood-eclipse {
+  background:
+    radial-gradient(circle at 50% 12%, rgba(190, 18, 60, 0.28), rgba(15, 5, 10, 0.42) 60%, rgba(0, 0, 0, 0.58) 100%),
+    inset 0 0 110px rgba(159, 18, 57, 0.32);
+  animation: bloodEclipsePulse 6s ease-in-out infinite;
+}
+
+.world-overlay-dragon-awakening {
+  background:
+    radial-gradient(circle at 50% 95%, rgba(234, 88, 12, 0.24), transparent 62%),
+    inset 0 0 90px rgba(154, 52, 18, 0.26);
+  animation: overlayBreathe 5.5s ease-in-out infinite;
+}
+
+.world-overlay-demon-rift {
+  background:
+    radial-gradient(circle at 75% 20%, rgba(192, 38, 211, 0.2), transparent 55%),
+    inset 0 0 95px rgba(134, 25, 143, 0.28);
+  animation: overlayBreathe 4.8s ease-in-out infinite;
+}
+
+.world-overlay-spreading-curse {
+  background:
+    radial-gradient(circle at 18% 75%, rgba(124, 58, 237, 0.2), transparent 56%),
+    inset 0 0 95px rgba(76, 29, 149, 0.26);
+  animation: overlayBreathe 6.5s ease-in-out infinite;
+}
+
+.world-overlay-black-plague {
+  background:
+    radial-gradient(circle at 50% 50%, transparent 45%, rgba(18, 24, 12, 0.46) 100%),
+    inset 0 0 100px rgba(63, 98, 18, 0.24);
+  animation: overlayBreathe 7s ease-in-out infinite;
+}
+
+.world-overlay-undead-invasion {
+  background:
+    radial-gradient(circle at 50% 0%, rgba(14, 116, 144, 0.2), transparent 60%),
+    inset 0 0 100px rgba(15, 23, 42, 0.45);
+  animation: overlayBreathe 5s ease-in-out infinite;
+}
+
+.world-overlay-vanishing-caravans {
+  background:
+    radial-gradient(circle at 85% 85%, rgba(217, 119, 6, 0.16), transparent 60%),
+    inset 0 0 85px rgba(120, 53, 15, 0.24);
+  animation: overlayBreathe 7.5s ease-in-out infinite;
+}
+
+.world-overlay-monster-uprising {
+  background:
+    radial-gradient(circle at 15% 25%, rgba(220, 38, 38, 0.2), transparent 55%),
+    inset 0 0 95px rgba(127, 29, 29, 0.28);
+  animation: overlayBreathe 4.5s ease-in-out infinite;
+}
+
+.world-overlay-ancient-temple {
+  background:
+    radial-gradient(circle at 50% 15%, rgba(16, 185, 129, 0.18), transparent 58%),
+    inset 0 0 90px rgba(6, 95, 70, 0.24);
+  animation: overlayBreathe 6s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

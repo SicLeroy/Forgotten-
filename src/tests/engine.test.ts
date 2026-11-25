@@ -18,6 +18,7 @@ import { NPCS } from '../data/npcs';
 import { REGIONS } from '../data/regions';
 import { TEST_SCENARIO_PRESETS } from '../data/testFixtures';
 import { MAJOR_WORLD_EVENTS } from '../data/worldEvents';
+import { AiManager } from '../engine/AiManager';
 import { inferChronicleScope } from '../engine/ChronicleHelper';
 import { DayNightManager, HIDDEN_NIGHT_PASSAGES } from '../engine/DayNightManager';
 import { GameManager } from '../engine/GameManager';
@@ -42,6 +43,8 @@ import { rollD6 } from '../engine/rng';
 import { LocalizationManager } from '../i18n/LocalizationManager';
 import { SaveManager } from '../storage/SaveManager';
 import {
+  AiBehaviorStyle,
+  AiDifficulty,
   CardCategory,
   GameState,
   HERO_INVENTORY_LIMITS,
@@ -49,6 +52,7 @@ import {
   NpcRole,
   SectorId,
 } from '../types/game';
+import { resolveWorldEventVisuals, WORLD_EVENT_VISUAL_MAP } from '../utils/worldEventVisuals';
 
 function runTest(name: string, fn: () => void): void {
   fn();
@@ -1665,6 +1669,249 @@ runTest('SoundEngine dynamically selects ambient profiles for all 10 world event
   // Resets cleanly back to calm
   assert.equal(soundEngine.setActiveWorldEvents([], null), 'calm');
   assert.equal(soundEngine.getActiveAmbientProfile().layerType, 'lute_calm');
+});
+
+runTest('resolveWorldEventVisuals maps all 10 world events to CSS animations and filters cleanly', () => {
+  const calm = resolveWorldEventVisuals([]);
+  assert.equal(calm.active, false);
+  assert.equal(calm.primaryEffectKey, 'calm');
+  assert.equal(calm.containerClassName, '');
+  assert.equal(calm.overlayClasses.length, 0);
+
+  let state = RulesEngine.createNewGame({
+    mode: 'local_hotseat',
+    seed: 951122,
+    playerConfigs: [{ name: 'VisualHero', heroId: 'hero_02', isAI: false }],
+  });
+
+  // Magical Storm -> screen shake class + storm overlay
+  WorldEventManager.spawnMajorEvent(state, 'major_arcane_storm');
+  const stormFx = resolveWorldEventVisuals(WorldEventManager.getActiveEvents(state));
+  assert.equal(stormFx.active, true);
+  assert.equal(stormFx.primaryEffectKey, 'major_arcane_storm');
+  assert.ok(stormFx.containerClassName.includes('world-fx-arcane-storm'));
+  assert.ok(stormFx.overlayClasses[0].includes('world-overlay-arcane-storm'));
+
+  // Bloody Eclipse escalated to Stage 2 -> takes priority over Stage 1 storm
+  WorldEventManager.spawnMajorEvent(state, 'major_blood_eclipse');
+  state.activeMajorEvents![1].stage = 2;
+  const dualFx = resolveWorldEventVisuals(WorldEventManager.getActiveEvents(state));
+  assert.equal(dualFx.active, true);
+  assert.equal(dualFx.primaryEffectKey, 'major_blood_eclipse');
+  assert.equal(dualFx.highestStage, 2);
+  assert.equal(dualFx.overlayClasses.length, 2);
+  assert.ok(dualFx.containerClassName.includes('world-fx-blood-eclipse'));
+  assert.ok(dualFx.containerClassName.includes('world-stage-2'));
+
+  // All 10 major world events have distinct visual specs
+  for (const def of MAJOR_WORLD_EVENTS) {
+    const spec = WORLD_EVENT_VISUAL_MAP[def.id];
+    assert.ok(spec, `Missing visual spec for ${def.id}`);
+    assert.ok(spec.containerClass.startsWith('world-fx-'));
+    assert.ok(spec.overlayClass.startsWith('world-overlay-'));
+    assert.ok(spec.cardAccentClass.length > 0);
+  }
+});
+
+runTest('AI system supports 1-6 participants, fair dice across difficulties, distinct styles, and decision logging', () => {
+  // 1. Supports 1-6 participants with per-bot styles and difficulties
+  for (const count of [1, 2, 4, 6]) {
+    const styles: AiBehaviorStyle[] = [
+      'conqueror',
+      'scholar',
+      'merchant_tactician',
+      'warden',
+      'conqueror',
+      'scholar',
+    ];
+    const diffs: AiDifficulty[] = ['easy', 'normal', 'hard', 'normal', 'hard', 'easy'];
+    const configs = Array.from({ length: count }, (_, idx) => ({
+      name: `Participant_${idx + 1}`,
+      heroId: HEROES[idx % HEROES.length].id,
+      isAI: idx > 0 || count === 1,
+      aiDifficulty: diffs[idx],
+      aiStyle: styles[idx],
+    }));
+    const game = RulesEngine.createNewGame({
+      mode: 'solo_ai',
+      seed: 1000 + count,
+      aiDifficulty: 'hard',
+      playerConfigs: configs,
+    });
+    assert.equal(game.players.length, count, `Must support ${count} participants`);
+    assert.equal(game.aiDifficulty, 'hard');
+    assert.ok(Array.isArray(game.aiDecisionLog));
+  }
+
+  // 2. Difficulty never alters dice RNG fairness (identical initial movement roll on same rngState)
+  const makeSoloBot = (diff: AiDifficulty, heroId: string, style: AiBehaviorStyle, seed = 424242) =>
+    RulesEngine.createNewGame({
+      mode: 'solo_ai',
+      seed,
+      aiDifficulty: diff,
+      playerConfigs: [
+        {
+          name: `${diff}_${style}`,
+          heroId,
+          isAI: true,
+          aiDifficulty: diff,
+          aiStyle: style,
+        },
+      ],
+    });
+
+  const easyBotState = makeSoloBot('easy', 'hero_01', 'conqueror', 515151);
+  const hardBotState = makeSoloBot('hard', 'hero_01', 'conqueror', 515151);
+  assert.equal(easyBotState.rngState, hardBotState.rngState, 'Identical seeds yield identical initial RNG');
+  const easyRoll = RulesEngine.rollMovement(easyBotState);
+  const hardRoll = RulesEngine.rollMovement(hardBotState);
+  assert.equal(
+    easyRoll.state.movement?.rawRoll,
+    hardRoll.state.movement?.rawRoll,
+    'Difficulty must never rig or alter raw d6 dice rolls'
+  );
+
+  // 3. Hard bot makes smarter decisions than Easy bot (equips stronger weapon, uses smart market purchase, uses magic stance when intellect dominates)
+  let smartGearState = makeSoloBot('hard', 'hero_02', 'scholar', 616161);
+  smartGearState.players[0].gold = 60;
+  smartGearState.players[0].locationId = 'loc_01'; // Village with market
+  // Put a strong weapon in hand & market
+  smartGearState.players[0].hand = ['card_025']; // high-tier weapon
+  smartGearState.players[0].intellect = 7;
+  smartGearState.players[0].strength = 2;
+  smartGearState = RulesEngine.runAiTurn(smartGearState);
+
+  const smartLogs = AiManager.getDecisionLog(smartGearState, smartGearState.players[0].id);
+  assert.ok(smartLogs.length > 0, 'Internal AI decision log must record decisions');
+  assert.ok(
+    smartLogs.some((l) => l.category === 'item' && l.chosenAction.startsWith('equip:')),
+    'Hard bot should equip stronger gear from hand'
+  );
+  assert.ok(
+    smartLogs.every((l) => l.reasoning.uk.length > 0 && l.reasoning.en.length > 0 && l.evaluatedOptions.length > 0),
+    'All AI decision log entries must store evaluated options and bilingual reasoning'
+  );
+
+  // Scholar / Hard bot chooses magic combat when intellect > strength (against Stone Armor enemy_r1_golem)
+  const mageCandidate = {
+    ...smartGearState.players[0],
+    strength: 2,
+    intellect: 7,
+    equipment: { ...smartGearState.players[0].equipment, weapon: null },
+  };
+  const scholarRisk = AiManager.evaluateChallengeRisk(
+    smartGearState,
+    mageCandidate,
+    'enemy_r1_golem'
+  );
+  assert.equal(scholarRisk.preferredType, 'magic', 'High-intellect hero should prefer magic combat');
+
+  // 4. Hard bot reacts to World Events, Night Passages, Rivals, and Quests
+  let reactiveState = RulesEngine.createNewGame({
+    mode: 'solo_ai',
+    seed: 717171,
+    aiDifficulty: 'hard',
+    playerConfigs: [
+      { name: 'WardenBot', heroId: 'hero_01', isAI: true, aiDifficulty: 'hard', aiStyle: 'warden' },
+      { name: 'WeakRival', heroId: 'hero_05', isAI: false },
+    ],
+  });
+  WorldEventManager.spawnMajorEvent(reactiveState, 'major_black_plague');
+  const plagueTarget = reactiveState.activeMajorEvents![0].targetLocationId;
+  reactiveState.players[0].locationId = plagueTarget;
+  reactiveState.players[0].gold = 40;
+  reactiveState.players[0].hp = 9;
+  reactiveState.players[0].strength = 7;
+  reactiveState = RulesEngine.runAiTurn(reactiveState);
+  const wardenLogs = AiManager.getDecisionLog(reactiveState, reactiveState.players[0].id);
+  assert.ok(
+    wardenLogs.some((l) => l.category === 'world_event' && l.chosenAction.startsWith('intervene:')),
+    'Warden/Hard bot at event location should intervene in Major World Event'
+  );
+
+  // Conqueror PvP rival awareness when stronger on the same non-sanctuary tile
+  let pvpBotState = RulesEngine.createNewGame({
+    mode: 'solo_ai',
+    seed: 727272,
+    aiDifficulty: 'hard',
+    playerConfigs: [
+      { name: 'ConquerorBot', heroId: 'hero_01', isAI: true, aiDifficulty: 'hard', aiStyle: 'conqueror' },
+      { name: 'RivalTarget', heroId: 'hero_05', isAI: false },
+    ],
+  });
+  pvpBotState.players[0].locationId = 'loc_12';
+  pvpBotState.players[1].locationId = 'loc_12';
+  pvpBotState.players[0].strength = 8;
+  pvpBotState.players[0].hp = 9;
+  pvpBotState.players[1].strength = 2;
+  pvpBotState.players[1].intellect = 2;
+  pvpBotState.players[1].hp = 4;
+  pvpBotState = RulesEngine.runAiTurn(pvpBotState);
+  const conquerorLogs = AiManager.getDecisionLog(pvpBotState, pvpBotState.players[0].id);
+  assert.ok(
+    conquerorLogs.some((l) => l.category === 'rival' && l.chosenAction.startsWith('pvp:')),
+    'Conqueror bot with clear stat advantage should challenge rival on same tile'
+  );
+
+  // 5. Equivalent strategy non-determinism: identical state with multiple equivalent seal/step strategies varies across seeds
+  const chosenGoals = new Set<string>();
+  const chosenSteps = new Set<string>();
+  for (let s = 1; s <= 20; s++) {
+    let eqState = makeSoloBot('normal', 'hero_03', 'scholar', 80000 + s * 137);
+    eqState.players[0].gateGuardianDefeated = true;
+    eqState.players[0].seals = ['seal_power'];
+    // loc_43 opens routes toward both seal_fate (loc_66) and seal_wisdom (loc_71)
+    eqState.players[0].locationId = 'loc_43';
+    eqState = RulesEngine.runAiTurn(eqState);
+    const logs = AiManager.getDecisionLog(eqState, eqState.players[0].id);
+    for (const l of logs) {
+      if (l.chosenAction.startsWith('goal:')) chosenGoals.add(l.chosenAction);
+      if (l.chosenAction.startsWith('step:')) chosenSteps.add(l.chosenAction);
+    }
+  }
+  assert.ok(
+    chosenGoals.size >= 2 || chosenSteps.size >= 2,
+    `Bots must avoid making identical choices across equivalent strategies (goals=${chosenGoals.size}, steps=${chosenSteps.size})`
+  );
+
+  // 6. Full automated 6-bot simulated match (24 AI turns across Easy/Normal/Hard & all 4 styles)
+  let simState = RulesEngine.createNewGame({
+    mode: 'solo_ai',
+    seed: 991188,
+    aiDifficulty: 'normal',
+    playerConfigs: [
+      { name: 'Bot1_Conq', heroId: 'hero_01', isAI: true, aiDifficulty: 'hard', aiStyle: 'conqueror' },
+      { name: 'Bot2_Schol', heroId: 'hero_02', isAI: true, aiDifficulty: 'normal', aiStyle: 'scholar' },
+      { name: 'Bot3_Tact', heroId: 'hero_03', isAI: true, aiDifficulty: 'hard', aiStyle: 'merchant_tactician' },
+      { name: 'Bot4_Ward', heroId: 'hero_04', isAI: true, aiDifficulty: 'normal', aiStyle: 'warden' },
+      { name: 'Bot5_Easy', heroId: 'hero_05', isAI: true, aiDifficulty: 'easy', aiStyle: 'conqueror' },
+      { name: 'Bot6_Easy2', heroId: 'hero_06', isAI: true, aiDifficulty: 'easy', aiStyle: 'scholar' },
+    ],
+  });
+
+  // Trigger a Major World Event and Thunderstorm during the test match
+  WorldEventManager.spawnMajorEvent(simState, 'major_arcane_storm');
+  WeatherManager.shiftWeather(simState, 'thunderstorm', 3);
+
+  for (let turn = 0; turn < 24 && simState.phase === 'PLAYING'; turn++) {
+    const active = getActivePlayer(simState);
+    assert.equal(active.isAI, true);
+    simState = RulesEngine.runAiTurn(simState);
+    assert.equal(simState.turnPhase, 'ACTION', 'Turn must always return cleanly to ACTION phase');
+    assert.equal(simState.movement, null, 'No dangling movement state after AI turn');
+    assert.equal(simState.encounter, null, 'No dangling encounter state after AI turn');
+  }
+
+  assert.ok(simState.round >= 4, `6-bot simulation should advance rounds cleanly (round=${simState.round})`);
+  assert.ok(
+    (simState.aiDecisionLog?.length ?? 0) >= 24,
+    'Simulated match must produce rich internal AI decision log'
+  );
+  const visitedTotal = simState.players.reduce((sum, pl) => sum + pl.visitedLocationIds.length, 0);
+  assert.ok(visitedTotal > 6, 'Bots must actively traverse the world map across simulated turns');
+  for (const pl of simState.players) {
+    assert.ok(pl.hp >= 0 && pl.hp <= pl.maxHp, `${pl.name} HP stayed within valid bounds`);
+  }
 });
 
 console.log('ALL TESTS PASSED SUCCESSFULLY.');

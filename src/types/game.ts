@@ -432,10 +432,47 @@ export interface PlayerEquipment {
   talisman: string | null;
 }
 
+export type AiDifficulty = 'easy' | 'normal' | 'hard';
+
+export type AiBehaviorStyle =
+  | 'conqueror'
+  | 'scholar'
+  | 'merchant_tactician'
+  | 'warden';
+
+export type AiDecisionCategory =
+  | 'route'
+  | 'risk'
+  | 'combat'
+  | 'item'
+  | 'quest'
+  | 'shop'
+  | 'seal'
+  | 'weather'
+  | 'day_night'
+  | 'world_event'
+  | 'rival'
+  | 'fate';
+
+export interface AiDecisionLogEntry {
+  id: string;
+  round: number;
+  playerId: string;
+  playerName: string;
+  difficulty: AiDifficulty;
+  style: AiBehaviorStyle;
+  category: AiDecisionCategory;
+  chosenAction: string;
+  evaluatedOptions: Array<{ option: string; score: number }>;
+  reasoning: LocalizedText;
+}
+
 export interface PlayerState {
   id: string;
   name: string;
   isAI: boolean;
+  aiDifficulty?: AiDifficulty;
+  aiStyle?: AiBehaviorStyle;
   heroId: string;
   locationId: string;
   hp: number;
@@ -753,16 +790,21 @@ export interface GameState {
   diceHistory?: DiceRollRecord[];
   winnerPlayerId: string | null;
   chronicle: ChronicleEntry[];
+  aiDifficulty?: AiDifficulty;
+  aiDecisionLog?: AiDecisionLogEntry[];
   updatedAt: number;
 }
 
 export interface NewGameConfig {
   mode: GameMode;
   seed?: number;
+  aiDifficulty?: AiDifficulty;
   playerConfigs: Array<{
     name: string;
     heroId: string;
     isAI: boolean;
+    aiDifficulty?: AiDifficulty;
+    aiStyle?: AiBehaviorStyle;
   }>;
 }
 

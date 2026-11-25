@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { SfxKind, soundEngine } from './audio/SoundEngine';
 import { EndGameScreen } from './components/EndGameScreen';
 import { GameTable } from './components/GameTable';
 import { HeroDeckView } from './components/HeroDeckView';
@@ -10,16 +11,80 @@ import { GameAction, GameManager } from './engine/GameManager';
 import { getActivePlayer } from './engine/RulesEngine';
 import { LocalizationManager } from './i18n/LocalizationManager';
 import { SaveManager } from './storage/SaveManager';
-import { EquipSlot, GameState, Language, NewGameConfig, SaveSlotSummary } from './types/game';
+import {
+  EquipSlot,
+  GameState,
+  Language,
+  MajorWorldEventId,
+  NewGameConfig,
+  SaveSlotSummary,
+} from './types/game';
 
 const { t } = LocalizationManager;
 
-export default function App() {
+const AUDIO_STORAGE_KEY = 'cfr_audio_settings_v1';
+
+export interface GlobalAudioContextValue {
+  musicEnabled: boolean;
+  sfxEnabled: boolean;
+  volume: number;
+  toggleMusic: () => void;
+  toggleSfx: () => void;
+  setVolume: (nextVolume: number) => void;
+  playSfx: (kind: SfxKind) => void;
+}
+
+const DEFAULT_AUDIO_STATE: GlobalAudioContextValue = {
+  musicEnabled: false,
+  sfxEnabled: true,
+  volume: 0.6,
+  toggleMusic: () => {},
+  toggleSfx: () => {},
+  setVolume: () => {},
+  playSfx: () => {},
+};
+
+export const AudioContext = createContext<GlobalAudioContextValue>(DEFAULT_AUDIO_STATE);
+
+export function useAudio(): GlobalAudioContextValue {
+  return useContext(AudioContext);
+}
+
+interface StoredAudioPrefs {
+  musicEnabled: boolean;
+  sfxEnabled: boolean;
+  volume: number;
+}
+
+function loadAudioPrefs(): StoredAudioPrefs {
+  if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') {
+    return { musicEnabled: false, sfxEnabled: true, volume: 0.6 };
+  }
+  try {
+    const raw = window.localStorage.getItem(AUDIO_STORAGE_KEY);
+    if (!raw) return { musicEnabled: false, sfxEnabled: true, volume: 0.6 };
+    const parsed = JSON.parse(raw) as Partial<StoredAudioPrefs>;
+    return {
+      musicEnabled: Boolean(parsed.musicEnabled),
+      sfxEnabled: typeof parsed.sfxEnabled === 'boolean' ? parsed.sfxEnabled : true,
+      volume:
+        typeof parsed.volume === 'number' && Number.isFinite(parsed.volume)
+          ? Math.max(0, Math.min(1, parsed.volume))
+          : 0.6,
+    };
+  } catch {
+    return { musicEnabled: false, sfxEnabled: true, volume: 0.6 };
+  }
+}
+
+function AppContent() {
+  const { playSfx } = useAudio();
   const [lang, setLang] = useState<Language>('uk');
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [activeView, setActiveView] = useState<ActiveView>('table');
   const [saves, setSaves] = useState<SaveSlotSummary[]>([]);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
+  const prevActiveMajorIdsRef = useRef<MajorWorldEventId[]>([]);
 
   const refreshSaves = useCallback(async () => {
     try {
@@ -41,7 +106,29 @@ export default function App() {
     refreshSaves();
   }, [refreshSaves]);
 
+  const activeMajorEventIdsKey = (gameState?.activeMajorEvents ?? []).map((e) => e.id).join(',');
+  const activeLegacyWorldEventId = gameState?.activeWorldEventId ?? null;
+
+  useEffect(() => {
+    if (!gameState || gameState.phase !== 'PLAYING') {
+      soundEngine.setActiveWorldEvents([], null);
+      prevActiveMajorIdsRef.current = [];
+      return;
+    }
+
+    const currentIds = (gameState.activeMajorEvents ?? []).map((e) => e.id);
+    soundEngine.setActiveWorldEvents(currentIds, activeLegacyWorldEventId);
+
+    const prevSet = new Set(prevActiveMajorIdsRef.current);
+    const newlySpawned = currentIds.find((id) => !prevSet.has(id));
+    if (newlySpawned) {
+      soundEngine.playWorldEventSting(newlySpawned);
+    }
+    prevActiveMajorIdsRef.current = currentIds;
+  }, [gameState, activeMajorEventIdsKey, activeLegacyWorldEventId]);
+
   const handleToggleLang = () => {
+    playSfx('click');
     const nextLang: Language = lang === 'uk' ? 'en' : 'uk';
     setLang(nextLang);
     SaveManager.saveLanguage(nextLang).catch(() => {});
@@ -49,16 +136,47 @@ export default function App() {
 
   const dispatchAction = (action: GameAction) => {
     if (!gameState) return;
+    soundEngine.unlock();
     const result = GameManager.dispatch(gameState, action);
     if (result.error) {
       setErrorBanner(result.error[lang]);
       return;
     }
+
+    if (result.state.phase === 'VICTORY') {
+      playSfx('victory');
+    } else if (result.state.phase === 'DEFEAT') {
+      playSfx('defeat');
+    } else if (action.type === 'COMBAT_ATTACK') {
+      playSfx(action.combatType === 'magic' ? 'magic' : 'hit');
+    } else if (
+      action.type === 'ROLL_MOVEMENT' ||
+      action.type === 'REROLL_MOVEMENT_DICE' ||
+      action.type === 'ROLL_ENCOUNTER_CHECK' ||
+      action.type === 'REROLL_ENCOUNTER_CHECK' ||
+      action.type === 'COMBAT_DEFEND' ||
+      action.type === 'COMBAT_FLEE' ||
+      action.type === 'ATTEMPT_TRIAL'
+    ) {
+      playSfx('dice');
+    } else if (
+      action.type === 'BUY_MARKET_CARD' ||
+      action.type === 'SELL_CARD' ||
+      action.type === 'BUY_SUPPLY' ||
+      action.type === 'REFRESH_MARKET'
+    ) {
+      playSfx('coin');
+    } else {
+      playSfx('click');
+    }
+
     setErrorBanner(null);
     setGameState(result.state);
   };
 
   const handleStartGame = async (config: NewGameConfig) => {
+    soundEngine.unlock();
+    playSfx('victory');
     const fresh = GameManager.startNewGame(config);
     setErrorBanner(null);
     setGameState(fresh);
@@ -69,6 +187,7 @@ export default function App() {
 
   const handleEndTurn = async () => {
     if (!gameState) return;
+    playSfx('click');
     const res = GameManager.dispatch(gameState, { type: 'END_TURN' });
     if (res.error) {
       setErrorBanner(res.error[lang]);
@@ -103,6 +222,7 @@ export default function App() {
   };
 
   const handleLoadSave = async (saveId: string) => {
+    playSfx('click');
     const loaded = await GameManager.continueSavedGame(saveId);
     if (loaded) {
       setErrorBanner(null);
@@ -112,6 +232,7 @@ export default function App() {
   };
 
   const handleDeleteSave = async (saveId: string) => {
+    playSfx('click');
     await SaveManager.deleteSave(saveId);
     await refreshSaves();
   };
@@ -125,8 +246,12 @@ export default function App() {
         onToggleLang={handleToggleLang}
         gamePhase={currentPhase}
         activeView={activeView}
-        onChangeView={setActiveView}
+        onChangeView={(view) => {
+          playSfx('click');
+          setActiveView(view);
+        }}
         onReturnToTitle={() => {
+          playSfx('click');
           setGameState(null);
           setActiveView('table');
           setErrorBanner(null);
@@ -163,6 +288,7 @@ export default function App() {
           lang={lang}
           state={gameState}
           onPlayAgain={() => {
+            playSfx('click');
             setGameState(null);
             setActiveView('table');
             setErrorBanner(null);
@@ -250,12 +376,26 @@ export default function App() {
           onAttemptTrial={() => dispatchAction({ type: 'ATTEMPT_TRIAL' })}
           onChallengeCitadel={() => dispatchAction({ type: 'CHALLENGE_CITADEL' })}
           onChallengeVoidLord={() => dispatchAction({ type: 'CHALLENGE_VOID_LORD' })}
-          onCombatAttack={() => dispatchAction({ type: 'COMBAT_ATTACK' })}
+          onChallengePlayer={(targetPlayerId) =>
+            dispatchAction({ type: 'CHALLENGE_PLAYER', targetPlayerId })
+          }
+          onCombatAttack={(combatType) =>
+            dispatchAction({ type: 'COMBAT_ATTACK', combatType })
+          }
           onCombatDefend={() => dispatchAction({ type: 'COMBAT_DEFEND' })}
           onCombatFlee={() => dispatchAction({ type: 'COMBAT_FLEE' })}
           onResolveEncounter={() => dispatchAction({ type: 'RESOLVE_ENCOUNTER' })}
+          onInterveneWorldEvent={(eventId) =>
+            dispatchAction({ type: 'INTERVENE_WORLD_EVENT', eventId })
+          }
+          onTalkToNpc={(npcId) => dispatchAction({ type: 'TALK_NPC', npcId })}
+          onSelectNpcOption={(optionId) =>
+            dispatchAction({ type: 'SELECT_NPC_OPTION', optionId })
+          }
+          onCloseNpcDialog={() => dispatchAction({ type: 'CLOSE_NPC_DIALOG' })}
           onEndTurn={handleEndTurn}
           onQuickSave={() => {
+            playSfx('click');
             handleSaveCurrent()
               .then(() => setErrorBanner(t(lang, 'savedToast')))
               .catch(() => {});
@@ -263,5 +403,64 @@ export default function App() {
         />
       )}
     </div>
+  );
+}
+
+export default function App() {
+  const [audioPrefs, setAudioPrefs] = useState<StoredAudioPrefs>(() => loadAudioPrefs());
+
+  useEffect(() => {
+    soundEngine.configure({
+      musicEnabled: audioPrefs.musicEnabled,
+      sfxEnabled: audioPrefs.sfxEnabled,
+      musicVolume: audioPrefs.volume * 0.7,
+      sfxVolume: audioPrefs.volume,
+    });
+    if (typeof window !== 'undefined' && typeof window.localStorage !== 'undefined') {
+      try {
+        window.localStorage.setItem(AUDIO_STORAGE_KEY, JSON.stringify(audioPrefs));
+      } catch {
+        // Ignore storage quota errors
+      }
+    }
+  }, [audioPrefs]);
+
+  const toggleMusic = useCallback(() => {
+    soundEngine.unlock();
+    setAudioPrefs((prev) => ({ ...prev, musicEnabled: !prev.musicEnabled }));
+  }, []);
+
+  const toggleSfx = useCallback(() => {
+    soundEngine.unlock();
+    setAudioPrefs((prev) => ({ ...prev, sfxEnabled: !prev.sfxEnabled }));
+  }, []);
+
+  const setVolume = useCallback((nextVolume: number) => {
+    const clamped = Math.max(0, Math.min(1, nextVolume));
+    setAudioPrefs((prev) => ({ ...prev, volume: clamped }));
+  }, []);
+
+  const playSfx = useCallback(
+    (kind: SfxKind) => {
+      if (!audioPrefs.sfxEnabled) return;
+      soundEngine.playSfx(kind);
+    },
+    [audioPrefs.sfxEnabled]
+  );
+
+  return (
+    <AudioContext.Provider
+      value={{
+        musicEnabled: audioPrefs.musicEnabled,
+        sfxEnabled: audioPrefs.sfxEnabled,
+        volume: audioPrefs.volume,
+        toggleMusic,
+        toggleSfx,
+        setVolume,
+        playSfx,
+      }}
+    >
+      <AppContent />
+    </AudioContext.Provider>
   );
 }

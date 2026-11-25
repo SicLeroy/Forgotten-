@@ -1,14 +1,18 @@
 import { TimeOfDay, WeatherType, WorldEventDefinition } from '../types/game';
 
-export const TIME_CYCLE: TimeOfDay[] = ['dawn', 'day', 'dusk', 'night'];
+export const TIME_CYCLE: TimeOfDay[] = ['dawn', 'day', 'day', 'night', 'night', 'night'];
 
 export const WEATHER_LIST: WeatherType[] = [
   'clear',
-  'mist',
   'rain',
-  'ash_storm',
-  'frost_wind',
-  'void_eclipse',
+  'heavy_rain',
+  'mist',
+  'magic_fog',
+  'snow',
+  'blizzard',
+  'heat',
+  'dry_wind',
+  'thunderstorm',
 ];
 
 export const WEATHER_MODIFIERS: Record<
@@ -16,8 +20,15 @@ export const WEATHER_MODIFIERS: Record<
   { attackMod: number; defenseMod: number; dangerMod: number }
 > = {
   clear: { attackMod: 0, defenseMod: 0, dangerMod: 0 },
+  rain: { attackMod: 0, defenseMod: 0, dangerMod: 1 },
+  heavy_rain: { attackMod: 0, defenseMod: 0, dangerMod: 1 },
   mist: { attackMod: 0, defenseMod: 1, dangerMod: 0 },
-  rain: { attackMod: -1, defenseMod: 0, dangerMod: 1 },
+  magic_fog: { attackMod: 0, defenseMod: 1, dangerMod: 1 },
+  snow: { attackMod: 0, defenseMod: 1, dangerMod: 1 },
+  blizzard: { attackMod: 1, defenseMod: 0, dangerMod: 2 },
+  heat: { attackMod: 1, defenseMod: -1, dangerMod: 1 },
+  dry_wind: { attackMod: 1, defenseMod: -1, dangerMod: 1 },
+  thunderstorm: { attackMod: 1, defenseMod: 0, dangerMod: 2 },
   ash_storm: { attackMod: 1, defenseMod: -1, dangerMod: 1 },
   frost_wind: { attackMod: 0, defenseMod: 1, dangerMod: 1 },
   void_eclipse: { attackMod: 1, defenseMod: 0, dangerMod: 2 },

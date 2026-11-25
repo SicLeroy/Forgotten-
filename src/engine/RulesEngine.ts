@@ -12,14 +12,20 @@ import {
   ActiveEncounter,
   CardDefinition,
   ChronicleEntry,
+  ChronicleScope,
+  CombatRoundBreakdown,
+  CombatType,
   DiceRollPurpose,
   DiceRollRecord,
+  EnemyDefinition,
+  EnemySpecialEffectType,
   EngineResult,
   EquipSlot,
   GameState,
   HERO_INVENTORY_LIMITS,
   HERO_STAT_LIMITS,
   LocalizedText,
+  MajorWorldEventId,
   NewGameConfig,
   PlayerState,
   RegionId,
@@ -31,9 +37,13 @@ import {
   computeEquipmentCombatAttack,
   getActivePlayerFromState,
 } from './GameState';
+import { DayNightManager } from './DayNightManager';
 import { NavigationGraph } from './NavigationGraph';
+import { NpcManager } from './NpcManager';
 import { normalizeSeed, randomInt, rollD6, shuffleWithState } from './rng';
 import { appendChronicleEntry, refillMarketStock, TurnManager } from './TurnManager';
+import { WeatherManager } from './WeatherManager';
+import { WorldEventManager } from './WorldEventManager';
 
 const MAX_HAND_SIZE = HERO_INVENTORY_LIMITS.maxHandSize;
 
@@ -47,9 +57,10 @@ function addChronicle(
   state: GameState,
   type: ChronicleEntry['type'],
   playerId: string | null,
-  text: LocalizedText
+  text: LocalizedText,
+  explicitScope?: ChronicleScope
 ): void {
-  appendChronicleEntry(state, type, playerId, text);
+  appendChronicleEntry(state, type, playerId, text, explicitScope);
 }
 
 function recordDiceRoll(
@@ -194,10 +205,18 @@ function applyDirectCardEffect(
 ): void {
   const eff = card.effect;
   if (eff.healHp) {
-    player.hp = Math.min(HERO_STAT_LIMITS.maxHp, player.maxHp, player.hp + eff.healHp);
+    const healGain = Math.max(1, eff.healHp + WorldEventManager.getHealingModifier(state));
+    player.hp = Math.min(HERO_STAT_LIMITS.maxHp, player.maxHp, player.hp + healGain);
   }
   if (eff.bonusAttack) {
     player.tempAttackBonus += eff.bonusAttack;
+  }
+  if (card.category === 'spell') {
+    const spellBonus = WorldEventManager.getSpellBonusModifier(state);
+    if (spellBonus > 0) {
+      player.tempAttackBonus += spellBonus;
+    }
+    WorldEventManager.recordWorldReaction(state, 'spell_cast', player, player.locationId);
   }
   if (eff.bonusDefense) {
     player.tempDefenseBonus += eff.bonusDefense;
@@ -222,36 +241,233 @@ function applyDirectCardEffect(
     player.curses = [];
     if (existing.length > 0) {
       state.adventureDiscardPile = [...(state.adventureDiscardPile ?? []), ...existing];
+      WorldEventManager.recordWorldReaction(state, 'cleanse_curse', player, player.locationId);
     }
   } else if (eff.removeCurse) {
-    removeCurseFromPlayer(state, player);
+    const cleansed = removeCurseFromPlayer(state, player);
+    if (cleansed) {
+      WorldEventManager.recordWorldReaction(state, 'cleanse_curse', player, player.locationId);
+    }
   }
   if (eff.weatherShift) {
-    state.weather = eff.weatherShift;
+    WeatherManager.shiftWeather(state, eff.weatherShift);
+  }
+  if (eff.allowFlee && state.combat) {
+    state.combat.fleeAllowedByCard = true;
   }
   if (eff.damageEnemy && state.combat) {
     state.combat.enemyCurrentHp = Math.max(0, state.combat.enemyCurrentHp - eff.damageEnemy);
   }
 }
 
-function resolveCombatEnemyStats(combat: ActiveCombat): {
+export interface CombatPreview {
+  combatType: CombatType;
+  enemyTier: EnemyDefinition['tier'] | 'pvp';
+  enemyName: LocalizedText;
+  enemySpecialEffect: EnemySpecialEffectType;
+  heroBaseStat: number;
+  heroGearBonus: number;
+  heroModifiers: number;
+  enemyStat: number;
+  enemyModifiers: number;
+  goldReward: number;
+  xpReward: number;
+}
+
+function inferCardEnemySpecialEffect(cardId: string, cardRarity: string): EnemySpecialEffectType {
+  if (cardRarity === 'rare' || cardRarity === 'legendary') {
+    const mod = parseInt(cardId.replace('card_', ''), 10) % 4;
+    if (mod === 0) return 'stone_armor';
+    if (mod === 1) return 'arcane_ward';
+    if (mod === 2) return 'burn_aura';
+    return 'curse_strike';
+  }
+  const mod = parseInt(cardId.replace('card_', ''), 10) % 3;
+  return mod === 0 ? 'first_strike' : 'none';
+}
+
+function resolveCombatEnemyStats(
+  combat: ActiveCombat,
+  state?: GameState
+): {
   name: LocalizedText;
+  tier: EnemyDefinition['tier'] | 'pvp';
   attack: number;
+  intellect: number;
   defense: number;
   goldReward: number;
   xpReward: number;
   sealReward?: SealType;
+  specialEffect: EnemySpecialEffectType;
 } {
-  const baseEnemy = ENEMY_MAP.get(combat.enemyId)!;
+  if (combat.combatPurpose === 'pvp' && combat.pvpDefenderId && state) {
+    const defender = state.players.find((p) => p.id === combat.pvpDefenderId);
+    if (defender) {
+      const defEff = computeEffectiveStats(defender);
+      const defGearAtk = computeEquipmentCombatAttack(defender);
+      return {
+        name: combat.enemyNameOverride ?? { uk: defender.name, en: defender.name },
+        tier: 'pvp',
+        attack: defEff.strength + defGearAtk,
+        intellect: defEff.intellect,
+        defense: defEff.armor + defender.tempDefenseBonus,
+        goldReward: Math.min(8, defender.gold),
+        xpReward: 2,
+        sealReward: undefined,
+        specialEffect: 'none',
+      };
+    }
+  }
+
+  const baseEnemy = ENEMY_MAP.get(combat.enemyId) ?? ENEMY_MAP.get('enemy_r1_wolf')!;
+  const attack = combat.enemyAttackOverride ?? baseEnemy.attack;
+  const intellect =
+    combat.enemyIntellectOverride ?? baseEnemy.intellect ?? Math.max(1, attack - 1);
   return {
     name: combat.enemyNameOverride ?? baseEnemy.name,
-    attack: combat.enemyAttackOverride ?? baseEnemy.attack,
+    tier: combat.enemyTier ?? baseEnemy.tier,
+    attack,
+    intellect,
     defense: combat.enemyDefenseOverride ?? baseEnemy.defense,
     goldReward: combat.enemyGoldOverride ?? baseEnemy.goldReward,
     xpReward:
       combat.enemyXpOverride ??
+      baseEnemy.xpReward ??
       (baseEnemy.tier === 'minion' ? 1 : baseEnemy.tier === 'elite' ? 2 : 3),
-    sealReward: combat.combatPurpose === 'card_enemy' ? undefined : baseEnemy.sealReward,
+    sealReward:
+      combat.combatPurpose === 'card_enemy' || combat.combatPurpose === 'pvp'
+        ? undefined
+        : baseEnemy.sealReward,
+    specialEffect: combat.enemySpecialEffect ?? baseEnemy.specialEffectType ?? 'none',
+  };
+}
+
+export function computeCombatPreview(state: GameState, combatType: CombatType): CombatPreview | null {
+  if (!state.combat) return null;
+  const combat = state.combat;
+  const player = getActivePlayerFromState(state);
+  const eff = computeEffectiveStats(player);
+  const resolved = resolveCombatEnemyStats(combat, state);
+  const loc = LOCATION_MAP.get(player.locationId)!;
+  const timeBonuses = DayNightManager.getHeroTimeBonuses(player, loc, state);
+  const weatherCombat = WeatherManager.getCombatModifiers(state.weather, loc);
+
+  const heroBaseStat = combatType === 'physical' ? player.strength : player.intellect;
+  const gearAtk = combatType === 'physical' ? computeEquipmentCombatAttack(player) : 0;
+  const heroGearBonus =
+    combatType === 'physical'
+      ? eff.strength - player.strength + gearAtk
+      : eff.intellect - player.intellect;
+
+  let effectPenalty = 0;
+  if (resolved.specialEffect === 'stone_armor' && combatType === 'physical') {
+    effectPenalty = -1;
+  } else if (resolved.specialEffect === 'arcane_ward' && combatType === 'magic') {
+    effectPenalty = -1;
+  }
+
+  const heroModifiers =
+    player.tempAttackBonus +
+    timeBonuses.physicalMod * (combatType === 'physical' ? 1 : 0) +
+    timeBonuses.magicMod * (combatType === 'magic' ? 1 : 0) +
+    (combatType === 'physical' ? weatherCombat.physicalMod : weatherCombat.magicMod) +
+    (combat.isDefending ? 1 : 0) +
+    effectPenalty;
+
+  const enemyStat = combatType === 'physical' ? resolved.attack : resolved.intellect;
+  let enemyEffectMod = 0;
+  if (resolved.specialEffect === 'first_strike' && combat.roundCount === 1) {
+    enemyEffectMod += 1;
+  } else if (resolved.specialEffect === 'void_oblivion' && combat.roundCount >= 2) {
+    enemyEffectMod += 1;
+  }
+
+  const enemyModifiers =
+    (combat.combatPurpose === 'pvp' ? 0 : getWorldEnemyAttackMod(state)) + enemyEffectMod;
+
+  return {
+    combatType,
+    enemyTier: resolved.tier,
+    enemyName: resolved.name,
+    enemySpecialEffect: resolved.specialEffect,
+    heroBaseStat,
+    heroGearBonus,
+    heroModifiers,
+    enemyStat,
+    enemyModifiers,
+    goldReward: resolved.goldReward,
+    xpReward: resolved.xpReward,
+  };
+}
+
+export function canFleeCombat(state: GameState): { allowed: boolean; reason: LocalizedText } {
+  if (!state.combat) {
+    return {
+      allowed: false,
+      reason: { uk: 'Немає активного бою.', en: 'No active combat.' },
+    };
+  }
+  const combat = state.combat;
+  if (combat.combatPurpose === 'void_lord') {
+    return {
+      allowed: false,
+      reason: {
+        uk: 'Від Володаря Порожнечі не можна відступити!',
+        en: 'Cannot flee from the Lord of the Void!',
+      },
+    };
+  }
+  if (combat.fleeAllowedByCard) {
+    return {
+      allowed: true,
+      reason: {
+        uk: 'Втеча дозволена активованою картою.',
+        en: 'Flee permitted by played escape card.',
+      },
+    };
+  }
+  if (combat.fleeAllowedByAbility) {
+    return {
+      allowed: true,
+      reason: {
+        uk: 'Втеча дозволена використаною здібністю героя.',
+        en: 'Flee permitted by activated hero ability.',
+      },
+    };
+  }
+
+  const player = getActivePlayerFromState(state);
+  const isBoss =
+    combat.combatPurpose === 'gate_guardian' ||
+    combat.combatPurpose === 'seal_guardian' ||
+    combat.combatPurpose === 'citadel_guardian';
+
+  if (!isBoss && (player.heroId === 'hero_03' || player.heroId === 'hero_05')) {
+    return {
+      allowed: true,
+      reason: {
+        uk: 'Втеча дозволена вродженим хистом слідопита / злодія.',
+        en: 'Flee permitted by innate Ranger/Rogue evasion trait.',
+      },
+    };
+  }
+
+  if (!isBoss && (state.weather === 'mist' || state.weather === 'magic_fog')) {
+    return {
+      allowed: true,
+      reason: {
+        uk: 'Правило погоди: туман приховує відступ.',
+        en: 'Weather rule: Mist conceals retreat.',
+      },
+    };
+  }
+
+  return {
+    allowed: false,
+    reason: {
+      uk: 'Втеча заборонена: потрібна здібність (Злодій/Слідопит), карта втечі або туманна погода.',
+      en: 'Flee locked: requires Rogue/Ranger trait, escape card, or Mist weather.',
+    },
   };
 }
 
@@ -266,11 +482,12 @@ function pickRegionalEnemyId(state: GameState, regionId: RegionId): string {
 
 function getWorldEnemyAttackMod(state: GameState): number {
   let mod = WEATHER_MODIFIERS[state.weather].attackMod;
-  if (state.timeOfDay === 'night') mod += 1;
+  if (DayNightManager.isNight(state)) mod += 1;
   if (state.activeWorldEventId) {
     const evt = WORLD_EVENT_MAP.get(state.activeWorldEventId);
     if (evt) mod += evt.enemyAttackMod;
   }
+  mod += WorldEventManager.getEnemyAttackModifier(state);
   return mod;
 }
 
@@ -310,7 +527,7 @@ function handlePlayerDefeatIfNeeded(state: GameState, player: PlayerState): void
 }
 
 function resolveCombatVictory(state: GameState, player: PlayerState, combat: ActiveCombat): void {
-  const resolved = resolveCombatEnemyStats(combat);
+  const resolved = resolveCombatEnemyStats(combat, state);
   player.enemiesSlain += 1;
   player.gold += resolved.goldReward;
   player.experience += resolved.xpReward;
@@ -369,6 +586,8 @@ function resolveCombatVictory(state: GameState, player: PlayerState, combat: Act
   }
 
   drawCardsFromDeck(state, player, 1);
+  WorldEventManager.recordWorldReaction(state, 'combat_victory', player, player.locationId);
+  NpcManager.syncQuestProgress(state, player);
   state.combat = null;
   state.turnPhase = 'ACTION';
   if (state.phase === 'PLAYING') {
@@ -378,13 +597,18 @@ function resolveCombatVictory(state: GameState, player: PlayerState, combat: Act
 
 function triggerArrivalOutcome(state: GameState, player: PlayerState): void {
   const targetLoc = LOCATION_MAP.get(player.locationId)!;
-  const timeEffect =
-    state.timeOfDay === 'night' || state.timeOfDay === 'dusk'
-      ? targetLoc.nightEffect
-      : targetLoc.dayEffect;
+  const isNight = DayNightManager.isNight(state);
+  const timeEffect = isNight ? targetLoc.nightEffect : targetLoc.dayEffect;
 
-  const weatherDanger = WEATHER_MODIFIERS[state.weather].dangerMod;
-  const totalDanger = targetLoc.dangerLevel + timeEffect.dangerMod + weatherDanger;
+  const weatherDanger = WeatherManager.getCombatModifiers(state.weather, targetLoc).dangerMod;
+  const majorLocDanger = WorldEventManager.getLocationEventModifier(state, targetLoc).dangerMod;
+  const majorNightDanger = WorldEventManager.getNightDangerModifier(state);
+  const totalDanger = targetLoc.dangerLevel + timeEffect.dangerMod + weatherDanger + majorLocDanger + majorNightDanger;
+
+  const weatherInteraction = WeatherManager.applyHeroWeatherArrivalInteraction(state, player, targetLoc);
+  if (weatherInteraction) {
+    addChronicle(state, 'world', player.id, weatherInteraction);
+  }
 
   state.turnCycleStep = 'destination_activation';
 
@@ -394,7 +618,8 @@ function triggerArrivalOutcome(state: GameState, player: PlayerState): void {
   state.rngState = roll.nextState;
 
   if (targetLoc.terrain === 'sanctuary' || targetLoc.terrain === 'village') {
-    const heal = roll.roll >= 4 ? 2 : 1;
+    const rawHeal = roll.roll >= 4 ? 2 : 1;
+    const heal = Math.max(1, rawHeal + WorldEventManager.getHealingModifier(state));
     const before = player.hp;
     player.hp = Math.min(HERO_STAT_LIMITS.maxHp, player.maxHp, player.hp + heal);
     const gained = player.hp - before;
@@ -415,16 +640,31 @@ function triggerArrivalOutcome(state: GameState, player: PlayerState): void {
   }
 
   if (roll.roll <= 2 && totalDanger >= 4) {
+    if (WeatherManager.shouldConcealEncounter(state.weather)) {
+      const fogText: LocalizedText = {
+        uk: `5. Прибуття до "${targetLoc.name.uk}" (d6=${roll.roll}): туманна погода приховала героя — ворожої зустрічі уникнуто!`,
+        en: `5. Arrival at "${targetLoc.name.en}" (d6=${roll.roll}): fog concealed your path — hostile encounter avoided!`,
+      };
+      recordDiceRoll(state, player, 'arrival_event', roll.roll, 0, roll.roll, rngBefore, roll.nextState, fogText);
+      addChronicle(state, 'world', player.id, fogText);
+      syncTurnCycleActionGuidance(state);
+      return;
+    }
+
     const enemyId = pickRegionalEnemyId(state, targetLoc.regionId);
     const enemy = ENEMY_MAP.get(enemyId)!;
     state.combat = {
       enemyId,
+      enemyTier: enemy.tier,
+      enemySpecialEffect: enemy.specialEffectType ?? 'none',
       enemyCurrentHp: enemy.maxHp,
       enemyMaxHp: enemy.maxHp,
       isDefending: false,
       roundCount: 1,
       lastPlayerRoll: null,
       lastEnemyRoll: null,
+      lastBreakdown: null,
+      combatLog: [],
       combatPurpose: 'roaming',
     };
     state.turnPhase = 'COMBAT';
@@ -538,8 +778,16 @@ export const RulesEngine = {
       round: 1,
       activePlayerIndex: 0,
       timeOfDay: 'dawn',
+      dayNightCycleRound: 1,
+      dayNightPhase: 'day',
       weather: 'clear',
+      weatherDurationRemaining: 2,
+      weatherTotalDuration: 2,
       activeWorldEventId: null,
+      activeMajorEvents: [],
+      completedMajorEventIds: [],
+      npcStates: {},
+      activeNpcDialog: null,
       players,
       deck,
       discardPile: [],
@@ -556,10 +804,16 @@ export const RulesEngine = {
       updatedAt: Date.now(),
     };
 
-    addChronicle(state, 'system', null, {
-      uk: `Хроніка розпочалася (зерно #${seed}). Мета: зібрати 3 Печатки, пройти випробування та здолати Володаря Порожнечі.`,
-      en: `Chronicle begun (Seed #${seed}). Goal: gather 3 Seals, pass trials, and defeat the Lord of the Void.`,
-    });
+    addChronicle(
+      state,
+      'system',
+      null,
+      {
+        uk: `Хроніка розпочалася (зерно #${seed}). Мета: зібрати 3 Печатки, пройти випробування та здолати Володаря Порожнечі.`,
+        en: `Chronicle begun (Seed #${seed}). Goal: gather 3 Seals, pass trials, and defeat the Lord of the Void.`,
+      },
+      'global'
+    );
 
     TurnManager.applyTurnStartAndEffects(state, true);
 
@@ -584,7 +838,7 @@ export const RulesEngine = {
     }
 
     const currentLoc = LOCATION_MAP.get(player.locationId)!;
-    const weatherMoveMod = currentLoc.weatherModifiers[next.weather]?.moveMod ?? 0;
+    const weatherMoveMod = WeatherManager.getMoveModifier(next.weather, currentLoc);
 
     const rngBefore = next.rngState;
     const roll = rollD6(next.rngState);
@@ -741,14 +995,17 @@ export const RulesEngine = {
     const currentLoc = LOCATION_MAP.get(player.locationId);
     const targetLoc = LOCATION_MAP.get(targetLocationId);
 
-    if (!currentLoc || !targetLoc || !currentLoc.neighbors.includes(targetLocationId)) {
+    const isNightPassage = DayNightManager.getHiddenPassagesForLocation(currentLoc?.id ?? '', next).some(
+      (p) => p.targetId === targetLocationId
+    );
+    if (!currentLoc || !targetLoc || (!currentLoc.neighbors.includes(targetLocationId) && !isNightPassage)) {
       return {
         state,
         error: { uk: 'Локація недосяжна з поточної позиції.', en: 'Location is not adjacent.' },
       };
     }
 
-    const access = NavigationGraph.canAccessLocation(player, targetLocationId);
+    const access = NavigationGraph.canAccessLocation(player, targetLocationId, next, currentLoc.id);
     if (!access.allowed) {
       return {
         state,
@@ -756,9 +1013,11 @@ export const RulesEngine = {
       };
     }
 
+    next.activeNpcDialog = null;
     player.locationId = targetLoc.id;
     if (!player.visitedLocationIds.includes(targetLoc.id)) {
       player.visitedLocationIds.push(targetLoc.id);
+      NpcManager.syncQuestProgress(next, player);
     }
     next.movement!.pathTaken.push(targetLoc.id);
     next.movement!.stepsRemaining -= 1;
@@ -831,14 +1090,17 @@ export const RulesEngine = {
 
     const currentLoc = LOCATION_MAP.get(player.locationId);
     const targetLoc = LOCATION_MAP.get(targetLocationId);
-    if (!currentLoc || !targetLoc || !currentLoc.neighbors.includes(targetLocationId)) {
+    const isNightPassage = DayNightManager.getHiddenPassagesForLocation(currentLoc?.id ?? '', next).some(
+      (p) => p.targetId === targetLocationId
+    );
+    if (!currentLoc || !targetLoc || (!currentLoc.neighbors.includes(targetLocationId) && !isNightPassage)) {
       return {
         state,
         error: { uk: 'Локація недосяжна з поточної позиції.', en: 'Location is not adjacent to your position.' },
       };
     }
 
-    const access = NavigationGraph.canAccessLocation(player, targetLocationId);
+    const access = NavigationGraph.canAccessLocation(player, targetLocationId, next, currentLoc.id);
     if (!access.allowed) {
       return {
         state,
@@ -846,10 +1108,12 @@ export const RulesEngine = {
       };
     }
 
+    next.activeNpcDialog = null;
     player.locationId = targetLoc.id;
     player.actionsRemaining -= 1;
     if (!player.visitedLocationIds.includes(targetLoc.id)) {
       player.visitedLocationIds.push(targetLoc.id);
+      NpcManager.syncQuestProgress(next, player);
     }
 
     addChronicle(next, 'move', player.id, {
@@ -871,6 +1135,7 @@ export const RulesEngine = {
     }
 
     const next = cloneState(state);
+    next.activeNpcDialog = null;
     const player = getActivePlayer(next);
     if (player.actionsRemaining <= 0) {
       return {
@@ -881,6 +1146,13 @@ export const RulesEngine = {
 
     const loc = LOCATION_MAP.get(player.locationId)!;
     player.actionsRemaining -= 1;
+
+    const exploreWeatherEvent = WeatherManager.applyHeroWeatherArrivalInteraction(next, player, loc);
+    if (exploreWeatherEvent) {
+      addChronicle(next, 'world', player.id, exploreWeatherEvent);
+    }
+    WorldEventManager.recordWorldReaction(next, 'explore', player, loc.id);
+    NpcManager.syncQuestProgress(next, player);
 
     const drawnAdvCard = drawAdventureCardFromDeck(next);
     if (!drawnAdvCard) {
@@ -902,21 +1174,29 @@ export const RulesEngine = {
 
     if (drawnAdvCard.category === 'enemy' && drawnAdvCard.effect.enemyProfile) {
       const ep = drawnAdvCard.effect.enemyProfile;
+      const cardEnemyTier: EnemyDefinition['tier'] =
+        drawnAdvCard.rarity === 'rare' || drawnAdvCard.rarity === 'legendary' ? 'elite' : 'minion';
+      const inferredIntellect = Math.max(1, ep.attack - 1 + (ep.defense >= 3 ? 1 : 0));
       next.combat = {
         enemyId: 'enemy_r1_wolf',
         enemyCardId: drawnAdvCard.id,
+        enemyTier: cardEnemyTier,
         enemyNameOverride: ep.name,
         enemyAttackOverride: ep.attack,
+        enemyIntellectOverride: inferredIntellect,
         enemyDefenseOverride: ep.defense,
         enemyGoldOverride: ep.goldReward,
         enemyXpOverride: ep.xpReward,
         enemyTraitOverride: ep.trait,
+        enemySpecialEffect: inferCardEnemySpecialEffect(drawnAdvCard.id, drawnAdvCard.rarity),
         enemyCurrentHp: ep.maxHp,
         enemyMaxHp: ep.maxHp,
         isDefending: false,
         roundCount: 1,
         lastPlayerRoll: null,
         lastEnemyRoll: null,
+        lastBreakdown: null,
+        combatLog: [],
         combatPurpose: 'card_enemy',
       };
       next.turnPhase = 'COMBAT';
@@ -1211,7 +1491,8 @@ export const RulesEngine = {
     }
 
     const loc = LOCATION_MAP.get(player.locationId)!;
-    const healAmount = loc.terrain === 'sanctuary' || loc.terrain === 'village' ? 4 : 2;
+    const baseHeal = loc.terrain === 'sanctuary' || loc.terrain === 'village' ? 4 : 2;
+    const healAmount = Math.max(1, baseHeal + WorldEventManager.getHealingModifier(next));
     const beforeHp = player.hp;
     player.hp = Math.min(HERO_STAT_LIMITS.maxHp, player.maxHp, player.hp + healAmount);
     player.actionsRemaining -= 1;
@@ -1220,6 +1501,7 @@ export const RulesEngine = {
       uk: `${player.name} відпочиває в "${loc.name.uk}" і відновлює ${player.hp - beforeHp} HP.`,
       en: `${player.name} rests at "${loc.name.en}" and restores ${player.hp - beforeHp} HP.`,
     });
+    WorldEventManager.recordWorldReaction(next, 'heal_or_rest', player, loc.id);
 
     syncTurnCycleActionGuidance(next);
     next.updatedAt = Date.now();
@@ -1268,22 +1550,27 @@ export const RulesEngine = {
         error: { uk: 'Купівля можлива лише в поселеннях та святилищах.', en: 'Supplies can only be bought in villages or sanctuaries.' },
       };
     }
-    if (player.gold < 15) {
-      return { state, error: { uk: 'Потрібно 15 золота.', en: 'Requires 15 Gold.' } };
+    const supplyCost = Math.max(4, 15 + WorldEventManager.getMarketPriceModifier(next));
+    if (player.gold < supplyCost) {
+      return {
+        state,
+        error: { uk: `Потрібно ${supplyCost} золота.`, en: `Requires ${supplyCost} Gold.` },
+      };
     }
     if (player.hand.length >= MAX_HAND_SIZE) {
       return { state, error: { uk: 'Рука заповнена (макс. 7 карт).', en: 'Hand is full (max 7 cards).' } };
     }
 
-    player.gold -= 15;
+    player.gold -= supplyCost;
     const drawn = drawCardsFromDeck(next, player, 1);
     if (drawn.length > 0) {
       const card = CARD_MAP.get(drawn[0])!;
       addChronicle(next, 'card', player.id, {
-        uk: `${player.name} купує спорядження "${card.name.uk}" за 15 золота.`,
-        en: `${player.name} buys "${card.name.en}" for 15 Gold.`,
+        uk: `${player.name} купує спорядження "${card.name.uk}" за ${supplyCost} золота.`,
+        en: `${player.name} buys "${card.name.en}" for ${supplyCost} Gold.`,
       });
     }
+    WorldEventManager.recordWorldReaction(next, 'trade', player, loc.id);
     next.updatedAt = Date.now();
     return { state: next };
   },
@@ -1313,7 +1600,7 @@ export const RulesEngine = {
       return { state, error: { uk: 'Невідома карта.', en: 'Unknown card.' } };
     }
 
-    const cost = Math.max(4, card.goldCost);
+    const cost = Math.max(4, card.goldCost + WorldEventManager.getMarketPriceModifier(next));
     if (player.gold < cost) {
       return {
         state,
@@ -1361,6 +1648,7 @@ export const RulesEngine = {
       uk: `${player.name} купує «${card.name.uk}» за ${cost} золота.`,
       en: `${player.name} buys "${card.name.en}" for ${cost} Gold.`,
     });
+    WorldEventManager.recordWorldReaction(next, 'trade', player, loc.id);
     next.updatedAt = Date.now();
     return { state: next };
   },
@@ -1454,14 +1742,16 @@ export const RulesEngine = {
     }
 
     player.gold -= 8;
+    const healGain = Math.max(1, 4 + WorldEventManager.getHealingModifier(next));
     const before = player.hp;
-    player.hp = Math.min(HERO_STAT_LIMITS.maxHp, player.maxHp, player.hp + 4);
+    player.hp = Math.min(HERO_STAT_LIMITS.maxHp, player.maxHp, player.hp + healGain);
     const gained = player.hp - before;
 
     addChronicle(next, 'world', player.id, {
       uk: `${player.name} отримує лікування в "${loc.name.uk}" за 8 золота (+${gained} HP).`,
       en: `${player.name} receives healing at "${loc.name.en}" for 8 Gold (+${gained} HP).`,
     });
+    WorldEventManager.recordWorldReaction(next, 'heal_or_rest', player, loc.id);
     next.updatedAt = Date.now();
     return { state: next };
   },
@@ -1492,10 +1782,17 @@ export const RulesEngine = {
 
     player.gold -= 12;
     const removed = removeCurseFromPlayer(next, player, curseCardId);
-    addChronicle(next, 'seal', player.id, {
-      uk: `${player.name} знімає прокляття ${removed ? `«${removed.name.uk}»` : ''} у "${loc.name.uk}" за 12 золота.`,
-      en: `${player.name} cleanses ${removed ? `"${removed.name.en}"` : 'a curse'} at "${loc.name.en}" for 12 Gold.`,
-    });
+    addChronicle(
+      next,
+      'seal',
+      player.id,
+      {
+        uk: `${player.name} знімає прокляття ${removed ? `«${removed.name.uk}»` : ''} у "${loc.name.uk}" за 12 золота.`,
+        en: `${player.name} cleanses ${removed ? `"${removed.name.en}"` : 'a curse'} at "${loc.name.en}" for 12 Gold.`,
+      },
+      'local'
+    );
+    WorldEventManager.recordWorldReaction(next, 'cleanse_curse', player, loc.id);
     next.updatedAt = Date.now();
     return { state: next };
   },
@@ -1585,6 +1882,16 @@ export const RulesEngine = {
         player.gold += 4;
         drawCardsFromDeck(next, player, 1);
         break;
+    }
+
+    if (
+      next.combat &&
+      (hero.abilityType === 'rogue_shadow' ||
+        hero.abilityType === 'archer_precision' ||
+        hero.abilityType === 'elven_blade_dance' ||
+        hero.abilityType === 'sorceress_starfire')
+    ) {
+      next.combat.fleeAllowedByAbility = true;
     }
 
     addChronicle(next, 'card', player.id, {
@@ -1924,12 +2231,16 @@ export const RulesEngine = {
     const enemy = ENEMY_MAP.get(loc.sealGuardianId)!;
     next.combat = {
       enemyId: enemy.id,
+      enemyTier: enemy.tier,
+      enemySpecialEffect: enemy.specialEffectType ?? 'none',
       enemyCurrentHp: enemy.maxHp,
       enemyMaxHp: enemy.maxHp,
       isDefending: false,
       roundCount: 1,
       lastPlayerRoll: null,
       lastEnemyRoll: null,
+      lastBreakdown: null,
+      combatLog: [],
       combatPurpose: 'seal_guardian',
     };
     next.turnPhase = 'COMBAT';
@@ -2031,12 +2342,16 @@ export const RulesEngine = {
     const enemy = ENEMY_MAP.get('enemy_gate_guardian')!;
     next.combat = {
       enemyId: enemy.id,
+      enemyTier: enemy.tier,
+      enemySpecialEffect: enemy.specialEffectType ?? 'none',
       enemyCurrentHp: enemy.maxHp,
       enemyMaxHp: enemy.maxHp,
       isDefending: false,
       roundCount: 1,
       lastPlayerRoll: null,
       lastEnemyRoll: null,
+      lastBreakdown: null,
+      combatLog: [],
       combatPurpose: 'gate_guardian',
     };
     next.turnPhase = 'COMBAT';
@@ -2099,12 +2414,16 @@ export const RulesEngine = {
     const enemy = ENEMY_MAP.get(enemyId)!;
     next.combat = {
       enemyId: enemy.id,
+      enemyTier: enemy.tier,
+      enemySpecialEffect: enemy.specialEffectType ?? 'none',
       enemyCurrentHp: enemy.maxHp,
       enemyMaxHp: enemy.maxHp,
       isDefending: false,
       roundCount: 1,
       lastPlayerRoll: null,
       lastEnemyRoll: null,
+      lastBreakdown: null,
+      combatLog: [],
       combatPurpose: 'citadel_guardian',
     };
     next.turnPhase = 'COMBAT';
@@ -2152,12 +2471,16 @@ export const RulesEngine = {
     const boss = ENEMY_MAP.get('enemy_void_lord')!;
     next.combat = {
       enemyId: boss.id,
+      enemyTier: boss.tier,
+      enemySpecialEffect: boss.specialEffectType ?? 'void_oblivion',
       enemyCurrentHp: boss.maxHp,
       enemyMaxHp: boss.maxHp,
       isDefending: false,
       roundCount: 1,
       lastPlayerRoll: null,
       lastEnemyRoll: null,
+      lastBreakdown: null,
+      combatLog: [],
       combatPurpose: 'void_lord',
     };
     next.turnPhase = 'COMBAT';
@@ -2174,7 +2497,72 @@ export const RulesEngine = {
     return { state: next };
   },
 
-  combatAttack(state: GameState): EngineResult {
+  challengePlayer(state: GameState, targetPlayerId: string): EngineResult {
+    if (state.phase !== 'PLAYING' || state.turnPhase !== 'ACTION') {
+      return { state, error: { uk: 'Дуель PvP можлива лише у фазі дій.', en: 'PvP duel only available in ACTION phase.' } };
+    }
+    const next = cloneState(state);
+    const player = getActivePlayer(next);
+    if (player.actionsRemaining <= 0) {
+      return { state, error: { uk: 'Немає дій для виклику на дуель.', en: 'No actions remaining for a duel.' } };
+    }
+    const defender = next.players.find((p) => p.id === targetPlayerId);
+    if (!defender || defender.id === player.id || defender.isDefeated) {
+      return { state, error: { uk: 'Суперника для PvP не знайдено.', en: 'PvP opponent not found.' } };
+    }
+    if (defender.locationId !== player.locationId) {
+      return {
+        state,
+        error: { uk: 'Герої мають перебувати на одній локації для PvP.', en: 'Heroes must share a location for PvP.' },
+      };
+    }
+
+    player.actionsRemaining -= 1;
+    const defHero = HERO_MAP.get(defender.heroId);
+    const defEff = getPlayerEffectiveStats(defender);
+    next.combat = {
+      enemyId: 'enemy_r1_bandit',
+      enemyTier: 'pvp',
+      pvpDefenderId: defender.id,
+      enemyNameOverride: {
+        uk: `${defender.name} (${defHero ? defHero.name.uk : 'Суперник'})`,
+        en: `${defender.name} (${defHero ? defHero.name.en : 'Rival'})`,
+      },
+      enemyAttackOverride: defEff.strength + computeEquipmentCombatAttack(defender),
+      enemyIntellectOverride: defEff.intellect,
+      enemyDefenseOverride: defEff.armor,
+      enemyGoldOverride: Math.min(8, defender.gold),
+      enemyXpOverride: 2,
+      enemyTraitOverride: {
+        uk: 'Дуель героїв (нічия на користь захисника)',
+        en: 'Hero Duel (ties favor Defender)',
+      },
+      enemySpecialEffect: 'none',
+      enemyCurrentHp: defender.hp,
+      enemyMaxHp: defender.maxHp,
+      isDefending: false,
+      roundCount: 1,
+      lastPlayerRoll: null,
+      lastEnemyRoll: null,
+      lastBreakdown: null,
+      combatLog: [],
+      combatPurpose: 'pvp',
+    };
+    next.turnPhase = 'COMBAT';
+    next.turnCycleStep = 'encounter';
+    next.turnGuidance = {
+      uk: `PvP-дуель проти ${defender.name}! Оберіть фізичний або магічний удар.`,
+      en: `PvP duel against ${defender.name}! Choose physical or magic strike.`,
+    };
+    addChronicle(next, 'combat', player.id, {
+      uk: `${player.name} викликає ${defender.name} на PvP-дуель!`,
+      en: `${player.name} challenges ${defender.name} to a PvP duel!`,
+    });
+    next.updatedAt = Date.now();
+    return { state: next };
+  },
+
+  combatAttack(state: GameState, combatType: CombatType = 'physical'): EngineResult {
     if (state.phase !== 'PLAYING' || state.turnPhase !== 'COMBAT' || !state.combat) {
       return { state, error: { uk: 'Зараз немає активного бою.', en: 'No active combat.' } };
     }
@@ -2182,8 +2570,8 @@ export const RulesEngine = {
     const next = cloneState(state);
     const player = getActivePlayer(next);
     const combat = next.combat!;
-    const enemy = resolveCombatEnemyStats(combat);
-    const eff = getPlayerEffectiveStats(player);
+    const resolved = resolveCombatEnemyStats(combat, next);
+    const preview = computeCombatPreview(next, combatType)!;
 
     const rngBefore = next.rngState;
     const playerRoll = rollD6(next.rngState);
@@ -2194,42 +2582,180 @@ export const RulesEngine = {
     combat.lastPlayerRoll = playerRoll.roll;
     combat.lastEnemyRoll = enemyRoll.roll;
 
-    const loc = LOCATION_MAP.get(player.locationId)!;
-    const timeMod =
-      next.timeOfDay === 'night' || next.timeOfDay === 'dusk' ? loc.nightEffect : loc.dayEffect;
-    const weatherLocMod = loc.weatherModifiers[next.weather]?.combatMod ?? 0;
+    const heroTotal =
+      preview.heroBaseStat + preview.heroGearBonus + preview.heroModifiers + playerRoll.roll;
+    const enemyTotal = preview.enemyStat + preview.enemyModifiers + enemyRoll.roll;
 
-    const combatStat = Math.max(eff.strength, eff.intellect);
-    const gearAtk = computeEquipmentCombatAttack(player);
-    const playerMod = combatStat + player.tempAttackBonus + gearAtk + timeMod.attackMod;
-    const playerPower = playerRoll.roll + playerMod;
-    const worldMod = getWorldEnemyAttackMod(next);
-    const enemyPower = enemyRoll.roll + enemy.attack + worldMod;
-    const weatherDef = WEATHER_MODIFIERS[next.weather].defenseMod + weatherLocMod + timeMod.defenseMod;
-    const totalDefense = eff.armor + player.tempDefenseBonus + weatherDef + (combat.isDefending ? 2 : 0);
+    // Tie rule: Defender wins ties. Since Hero initiated the attack, Enemy (or PvP defender) is Defender.
+    const wasTie = heroTotal === enemyTotal;
+    const playerWonClash = heroTotal > enemyTotal;
+    const styleUk = combatType === 'physical' ? 'Фізичний бій' : 'Магічний бій';
+    const styleEn = combatType === 'physical' ? 'Physical Clash' : 'Magic Clash';
 
+    let specialEffectNote: LocalizedText | undefined;
+    if (resolved.specialEffect === 'stone_armor' && combatType === 'physical') {
+      specialEffectNote = {
+        uk: 'Кам’яний панцир ворога зменшив фізичний модифікатор на 1.',
+        en: 'Stone Carapace reduced physical modifier by 1.',
+      };
+    } else if (resolved.specialEffect === 'arcane_ward' && combatType === 'magic') {
+      specialEffectNote = {
+        uk: 'Магічний бар’єр ворога зменшив магічний модифікатор на 1.',
+        en: 'Arcane Ward reduced magic modifier by 1.',
+      };
+    } else if (resolved.specialEffect === 'first_strike' && combat.roundCount === 1) {
+      specialEffectNote = {
+        uk: 'Швидкий кидок: ворог отримав +1 у 1-му раунді.',
+        en: 'Swift Lunge: enemy gained +1 in Round 1.',
+      };
+    } else if (resolved.specialEffect === 'void_oblivion' && combat.roundCount >= 2) {
+      specialEffectNote = {
+        uk: 'Тиск Порожнечі: бос отримав +1 у затяжному бою.',
+        en: 'Oblivion Surge: boss gained +1 in prolonged combat.',
+      };
+    }
+
+    const recordSummary: LocalizedText = {
+      uk: `${styleUk} з "${resolved.name.uk}": герой d6=${playerRoll.roll} (${heroTotal}) проти ${enemyTotal}.`,
+      en: `${styleEn} vs "${resolved.name.en}": hero d6=${playerRoll.roll} (${heroTotal}) vs ${enemyTotal}.`,
+    };
     recordDiceRoll(
       next,
       player,
       'combat_attack',
       playerRoll.roll,
-      playerMod,
-      playerPower,
+      preview.heroBaseStat + preview.heroGearBonus + preview.heroModifiers,
+      heroTotal,
       rngBefore,
       playerRoll.nextState,
-      {
-        uk: `Бій з "${enemy.name.uk}": герой d6=${playerRoll.roll} (${playerPower}) проти ворога ${enemyPower}.`,
-        en: `Combat vs "${enemy.name.en}": hero d6=${playerRoll.roll} (${playerPower}) vs enemy ${enemyPower}.`,
-      }
+      recordSummary
     );
 
-    if (playerPower >= enemyPower) {
-      const damageToEnemy = Math.max(2, playerPower - enemy.defense);
+    if (combat.combatPurpose === 'pvp' && combat.pvpDefenderId) {
+      const defender = next.players.find((p) => p.id === combat.pvpDefenderId)!;
+      if (playerWonClash) {
+        defender.hp = Math.max(0, defender.hp - 1);
+        const stolenGold = Math.min(defender.hp === 0 ? defender.gold : 8, defender.gold);
+        defender.gold -= stolenGold;
+        player.gold += stolenGold;
+        player.experience += 2;
+        player.enemiesSlain += 1;
+        const pvpSummary: LocalizedText = {
+          uk: `${player.name} перемагає ${defender.name} у PvP (${heroTotal} > ${enemyTotal}): захисник втрачає 1 HP, трофей +${stolenGold} з. і +2 досвіду.`,
+          en: `${player.name} defeats ${defender.name} in PvP (${heroTotal} > ${enemyTotal}): defender loses 1 HP, spoils +${stolenGold}g & +2 XP.`,
+        };
+        const breakdown: CombatRoundBreakdown = {
+          round: combat.roundCount,
+          combatType,
+          defenderSide: 'enemy',
+          heroBaseStat: preview.heroBaseStat,
+          heroGearBonus: preview.heroGearBonus,
+          heroModifiers: preview.heroModifiers,
+          heroRoll: playerRoll.roll,
+          heroTotal,
+          enemyStat: preview.enemyStat,
+          enemyModifiers: preview.enemyModifiers,
+          enemyRoll: enemyRoll.roll,
+          enemyTotal,
+          winner: 'player',
+          wasTie: false,
+          hpLostByHero: 0,
+          damageToEnemy: 1,
+          summary: pvpSummary,
+        };
+        combat.lastBreakdown = breakdown;
+        combat.combatLog = [breakdown, ...(combat.combatLog ?? [])];
+        addChronicle(next, 'combat', player.id, pvpSummary);
+        if (defender.hp === 0) {
+          handlePlayerDefeatIfNeeded(next, defender);
+        }
+        next.combat = null;
+        next.turnPhase = 'ACTION';
+        if (next.phase === 'PLAYING') syncTurnCycleActionGuidance(next);
+      } else {
+        player.hp = Math.max(0, player.hp - 1);
+        defender.experience += 1;
+        const pvpLossSummary: LocalizedText = {
+          uk: wasTie
+            ? `Нічия (${heroTotal} = ${enemyTotal}) — перемагає захисник ${defender.name}! ${player.name} втрачає 1 HP.`
+            : `${defender.name} перемагає у захисті (${enemyTotal} > ${heroTotal})! ${player.name} втрачає 1 HP.`,
+          en: wasTie
+            ? `Tie (${heroTotal} = ${enemyTotal}) — defender ${defender.name} prevails! ${player.name} loses 1 HP.`
+            : `${defender.name} defends successfully (${enemyTotal} > ${heroTotal})! ${player.name} loses 1 HP.`,
+        };
+        const breakdown: CombatRoundBreakdown = {
+          round: combat.roundCount,
+          combatType,
+          defenderSide: 'enemy',
+          heroBaseStat: preview.heroBaseStat,
+          heroGearBonus: preview.heroGearBonus,
+          heroModifiers: preview.heroModifiers,
+          heroRoll: playerRoll.roll,
+          heroTotal,
+          enemyStat: preview.enemyStat,
+          enemyModifiers: preview.enemyModifiers,
+          enemyRoll: enemyRoll.roll,
+          enemyTotal,
+          winner: 'enemy',
+          wasTie,
+          hpLostByHero: 1,
+          damageToEnemy: 0,
+          summary: pvpLossSummary,
+        };
+        combat.lastBreakdown = breakdown;
+        combat.combatLog = [breakdown, ...(combat.combatLog ?? [])];
+        addChronicle(next, 'combat', player.id, pvpLossSummary);
+        next.combat = null;
+        next.turnPhase = 'ACTION';
+        handlePlayerDefeatIfNeeded(next, player);
+        if (next.phase === 'PLAYING' && !player.isDefeated) syncTurnCycleActionGuidance(next);
+      }
+      next.updatedAt = Date.now();
+      return { state: next };
+    }
+
+    if (playerWonClash) {
+      const isSingleClashMinion = resolved.tier === 'minion';
+      const rawDamage = isSingleClashMinion
+        ? combat.enemyCurrentHp
+        : Math.max(
+            3,
+            heroTotal -
+              enemyTotal +
+              Math.max(2, Math.floor((preview.heroBaseStat + preview.heroGearBonus) / 2)) -
+              Math.floor(resolved.defense / 3)
+          );
+      const damageToEnemy = Math.min(combat.enemyCurrentHp, rawDamage);
       combat.enemyCurrentHp = Math.max(0, combat.enemyCurrentHp - damageToEnemy);
-      addChronicle(next, 'combat', player.id, {
-        uk: `${player.name} перемагає в зіткненні (d6=${playerRoll.roll}+${playerMod}=${playerPower} проти ${enemyPower}) і завдає ${damageToEnemy} шкоди "${enemy.name.uk}".`,
-        en: `${player.name} wins clash (d6=${playerRoll.roll}+${playerMod}=${playerPower} vs ${enemyPower}) dealing ${damageToEnemy} damage to "${enemy.name.en}".`,
-      });
+
+      const clashSummary: LocalizedText = {
+        uk: `${styleUk}: ${player.name} перемагає (${heroTotal} > ${enemyTotal}) → ${damageToEnemy} шкоди "${resolved.name.uk}".`,
+        en: `${styleEn}: ${player.name} wins clash (${heroTotal} > ${enemyTotal}) dealing ${damageToEnemy} damage to "${resolved.name.en}".`,
+      };
+      const breakdown: CombatRoundBreakdown = {
+        round: combat.roundCount,
+        combatType,
+        defenderSide: 'enemy',
+        heroBaseStat: preview.heroBaseStat,
+        heroGearBonus: preview.heroGearBonus,
+        heroModifiers: preview.heroModifiers,
+        heroRoll: playerRoll.roll,
+        heroTotal,
+        enemyStat: preview.enemyStat,
+        enemyModifiers: preview.enemyModifiers,
+        enemyRoll: enemyRoll.roll,
+        enemyTotal,
+        winner: 'player',
+        wasTie: false,
+        hpLostByHero: 0,
+        damageToEnemy,
+        specialEffectNote,
+        summary: clashSummary,
+      };
+      combat.lastBreakdown = breakdown;
+      combat.combatLog = [breakdown, ...(combat.combatLog ?? [])];
+
+      addChronicle(next, 'combat', player.id, clashSummary);
 
       if (combat.enemyCurrentHp <= 0) {
         resolveCombatVictory(next, player, combat);
@@ -2239,17 +2765,65 @@ export const RulesEngine = {
       combat.isDefending = false;
       combat.roundCount += 1;
     } else {
-      const rawHurt = Math.max(1, enemyPower - totalDefense);
-      const damageToPlayer = Math.min(2, rawHurt);
-      player.hp = Math.max(0, player.hp - damageToPlayer);
+      // Hero lost or tied clash -> defender wins tie -> Hero loses 1 HP
+      const hpLostByHero = 1;
+      player.hp = Math.max(0, player.hp - hpLostByHero);
+
+      if (resolved.specialEffect === 'burn_aura' && player.gold > 0) {
+        player.gold = Math.max(0, player.gold - 1);
+        specialEffectNote = {
+          uk: 'Вогняний подих спалив 1 золота.',
+          en: 'Ember Breath scorched 1 Gold.',
+        };
+      } else if (resolved.specialEffect === 'curse_strike') {
+        player.tempDefenseBonus = Math.max(-2, player.tempDefenseBonus - 1);
+        specialEffectNote = {
+          uk: 'Рунне прокляття послабило захист (-1).',
+          en: 'Runic Hex weakened defense (-1).',
+        };
+      } else if (resolved.specialEffect === 'void_oblivion' && player.fate > 0 && enemyTotal - heroTotal >= 4) {
+        player.fate = Math.max(0, player.fate - 1);
+        specialEffectNote = {
+          uk: 'Удар Порожнечі поглинув 1 очко Долі.',
+          en: 'Oblivion Strike drained 1 Fate.',
+        };
+      }
+
+      const lossSummary: LocalizedText = {
+        uk: wasTie
+          ? `${styleUk}: нічия (${heroTotal} = ${enemyTotal}) — перемагає захисник "${resolved.name.uk}" → ${player.name} втрачає 1 HP.`
+          : `${styleUk}: "${resolved.name.uk}" переважає (${enemyTotal} > ${heroTotal}) → ${player.name} втрачає 1 HP.`,
+        en: wasTie
+          ? `${styleEn}: tie (${heroTotal} = ${enemyTotal}) — defender "${resolved.name.en}" prevails → ${player.name} takes 1 HP loss.`
+          : `${styleEn}: "${resolved.name.en}" prevails (${enemyTotal} > ${heroTotal}) → ${player.name} takes 1 HP loss.`,
+      };
+
+      const breakdown: CombatRoundBreakdown = {
+        round: combat.roundCount,
+        combatType,
+        defenderSide: 'enemy',
+        heroBaseStat: preview.heroBaseStat,
+        heroGearBonus: preview.heroGearBonus,
+        heroModifiers: preview.heroModifiers,
+        heroRoll: playerRoll.roll,
+        heroTotal,
+        enemyStat: preview.enemyStat,
+        enemyModifiers: preview.enemyModifiers,
+        enemyRoll: enemyRoll.roll,
+        enemyTotal,
+        winner: 'enemy',
+        wasTie,
+        hpLostByHero,
+        damageToEnemy: 0,
+        specialEffectNote,
+        summary: lossSummary,
+      };
+      combat.lastBreakdown = breakdown;
+      combat.combatLog = [breakdown, ...(combat.combatLog ?? [])];
       combat.isDefending = false;
       combat.roundCount += 1;
 
-      addChronicle(next, 'combat', player.id, {
-        uk: `"${enemy.name.uk}" переважає (${enemyPower} проти ${playerPower}) → ${player.name} отримує ${damageToPlayer} шкоди.`,
-        en: `"${enemy.name.en}" prevails (${enemyPower} vs ${playerPower}) → ${player.name} takes ${damageToPlayer} damage.`,
-      });
-
+      addChronicle(next, 'combat', player.id, lossSummary);
       handlePlayerDefeatIfNeeded(next, player);
     }
 
@@ -2265,31 +2839,68 @@ export const RulesEngine = {
     const next = cloneState(state);
     const player = getActivePlayer(next);
     const combat = next.combat!;
-    const enemy = resolveCombatEnemyStats(combat);
+    const resolved = resolveCombatEnemyStats(combat, next);
     const eff = getPlayerEffectiveStats(player);
 
+    const playerRoll = rollD6(next.rngState);
+    next.rngState = playerRoll.nextState;
     const enemyRoll = rollD6(next.rngState);
     next.rngState = enemyRoll.nextState;
-    next.lastDiceRoll = enemyRoll.roll;
+    next.lastDiceRoll = playerRoll.roll;
+    combat.lastPlayerRoll = playerRoll.roll;
     combat.lastEnemyRoll = enemyRoll.roll;
 
-    const worldMod = getWorldEnemyAttackMod(next);
-    const enemyStrike = enemyRoll.roll + enemy.attack + worldMod;
-    const guardDefense = eff.armor + player.tempDefenseBonus + 4;
-    const damageToPlayer = enemyStrike > guardDefense + 2 ? 1 : 0;
+    const worldMod = combat.combatPurpose === 'pvp' ? 0 : getWorldEnemyAttackMod(next);
+    const heroGuardStat = eff.armor + player.tempDefenseBonus + Math.floor(eff.strength / 2) + 2;
+    const heroTotal = heroGuardStat + playerRoll.roll;
+    const enemyTotal = resolved.attack + worldMod + enemyRoll.roll;
 
-    player.hp = Math.max(0, player.hp - damageToPlayer);
-    if (player.hp > 0) {
+    // In Defend stance, Hero IS the Defender -> ties favor Hero!
+    const wasTie = heroTotal === enemyTotal;
+    const heroHeld = heroTotal >= enemyTotal;
+    const hpLostByHero = heroHeld ? 0 : 1;
+
+    player.hp = Math.max(0, player.hp - hpLostByHero);
+    if (heroHeld && player.hp > 0) {
       player.hp = Math.min(HERO_STAT_LIMITS.maxHp, player.maxHp, player.hp + 1);
     }
+
+    const defendSummary: LocalizedText = heroHeld
+      ? {
+          uk: `${player.name} утримує оборону (${heroTotal} ${wasTie ? '=' : '>'} ${enemyTotal}, нічия за захисником): 0 шкоди, +1 HP.`,
+          en: `${player.name} holds the shield (${heroTotal} ${wasTie ? '=' : '>'} ${enemyTotal}, defender wins ties): 0 damage, +1 HP.`,
+        }
+      : {
+          uk: `Оборона пробита (${enemyTotal} > ${heroTotal}): ${player.name} втрачає 1 HP.`,
+          en: `Guard broken (${enemyTotal} > ${heroTotal}): ${player.name} loses 1 HP.`,
+        };
+
+    const breakdown: CombatRoundBreakdown = {
+      round: combat.roundCount,
+      combatType: 'physical',
+      defenderSide: 'player',
+      heroBaseStat: eff.armor,
+      heroGearBonus: Math.floor(eff.strength / 2),
+      heroModifiers: player.tempDefenseBonus + 2,
+      heroRoll: playerRoll.roll,
+      heroTotal,
+      enemyStat: resolved.attack,
+      enemyModifiers: worldMod,
+      enemyRoll: enemyRoll.roll,
+      enemyTotal,
+      winner: heroHeld ? 'player' : 'enemy',
+      wasTie,
+      hpLostByHero,
+      damageToEnemy: 0,
+      summary: defendSummary,
+    };
+
+    combat.lastBreakdown = breakdown;
+    combat.combatLog = [breakdown, ...(combat.combatLog ?? [])];
     combat.isDefending = true;
     combat.roundCount += 1;
 
-    addChronicle(next, 'combat', player.id, {
-      uk: `${player.name} тримає щит проти "${enemy.name.uk}" (d6=${enemyRoll.roll}): отримано ${damageToPlayer} шкоди, +1 HP витримки.`,
-      en: `${player.name} braces against "${enemy.name.en}" (d6=${enemyRoll.roll}): ${damageToPlayer} damage taken, +1 HP recovered.`,
-    });
-
+    addChronicle(next, 'combat', player.id, defendSummary);
     handlePlayerDefeatIfNeeded(next, player);
     next.updatedAt = Date.now();
     return { state: next };
@@ -2299,11 +2910,9 @@ export const RulesEngine = {
     if (state.phase !== 'PLAYING' || state.turnPhase !== 'COMBAT' || !state.combat) {
       return { state, error: { uk: 'Немає бою для відступу.', en: 'No active combat to flee.' } };
     }
-    if (state.combat.combatPurpose === 'void_lord') {
-      return {
-        state,
-        error: { uk: 'Від Володаря Порожнечі не можна відступити!', en: 'Cannot flee from the Lord of the Void!' },
-      };
+    const fleeCheck = canFleeCombat(state);
+    if (!fleeCheck.allowed) {
+      return { state, error: fleeCheck.reason };
     }
 
     const next = cloneState(state);
@@ -2313,16 +2922,16 @@ export const RulesEngine = {
     const roll = rollD6(next.rngState);
     next.rngState = roll.nextState;
 
-    const fleeText: LocalizedText =
-      roll.roll + eff.fate >= 5
-        ? {
-            uk: `${player.name} успішно відступає з бою (d6=${roll.roll}+${eff.fate}).`,
-            en: `${player.name} successfully flees combat (d6=${roll.roll}+${eff.fate}).`,
-          }
-        : {
-            uk: `Відступ не вдався (d6=${roll.roll}+${eff.fate} < 5): -1 HP.`,
-            en: `Flee failed (d6=${roll.roll}+${eff.fate} < 5): -1 HP.`,
-          };
+    const fleeSuccess = roll.roll + eff.fate >= 5;
+    const fleeText: LocalizedText = fleeSuccess
+      ? {
+          uk: `${player.name} успішно відступає з бою (d6=${roll.roll}+${eff.fate} · ${fleeCheck.reason.uk}).`,
+          en: `${player.name} successfully flees combat (d6=${roll.roll}+${eff.fate} · ${fleeCheck.reason.en}).`,
+        }
+      : {
+          uk: `Відступ не вдався (d6=${roll.roll}+${eff.fate} < 5): -1 HP.`,
+          en: `Flee failed (d6=${roll.roll}+${eff.fate} < 5): -1 HP.`,
+        };
 
     recordDiceRoll(
       next,
@@ -2337,7 +2946,7 @@ export const RulesEngine = {
     );
     addChronicle(next, 'combat', player.id, fleeText);
 
-    if (roll.roll + eff.fate >= 5) {
+    if (fleeSuccess) {
       if (next.combat?.enemyCardId) {
         next.adventureDiscardPile = [...(next.adventureDiscardPile ?? []), next.combat.enemyCardId];
       }
@@ -2349,6 +2958,44 @@ export const RulesEngine = {
       handlePlayerDefeatIfNeeded(next, player);
     }
 
+    next.updatedAt = Date.now();
+    return { state: next };
+  },
+
+  interveneWorldEvent(state: GameState, eventId: MajorWorldEventId): EngineResult {
+    const next = cloneState(state);
+    const res = WorldEventManager.interveneInEvent(next, eventId);
+    if (!res.ok) {
+      return { state, error: res.error };
+    }
+    syncTurnCycleActionGuidance(next);
+    next.updatedAt = Date.now();
+    return { state: next };
+  },
+
+  talkToNpc(state: GameState, npcId: string): EngineResult {
+    const next = cloneState(state);
+    const res = NpcManager.talkToNpc(next, npcId);
+    if (!res.ok) {
+      return { state, error: res.error };
+    }
+    next.updatedAt = Date.now();
+    return { state: next };
+  },
+
+  chooseNpcDialogOption(state: GameState, optionId: string): EngineResult {
+    const next = cloneState(state);
+    const res = NpcManager.selectDialogOption(next, optionId);
+    if (!res.ok) {
+      return { state, error: res.error };
+    }
+    next.updatedAt = Date.now();
+    return { state: next };
+  },
+
+  closeNpcDialog(state: GameState): EngineResult {
+    const next = cloneState(state);
+    NpcManager.closeDialog(next);
     next.updatedAt = Date.now();
     return { state: next };
   },
@@ -2367,10 +3014,16 @@ export const RulesEngine = {
     const next = cloneState(state);
     const player = getActivePlayer(next);
     next.turnCycleStep = 'turn_end';
-    addChronicle(next, 'system', player.id, {
-      uk: `7. Завершення ходу: ${player.name} завершує дії раунду ${next.round}.`,
-      en: `7. End Turn: ${player.name} concludes Round ${next.round}.`,
-    });
+    addChronicle(
+      next,
+      'system',
+      player.id,
+      {
+        uk: `7. Завершення ходу: ${player.name} завершує дії раунду ${next.round}.`,
+        en: `7. End Turn: ${player.name} concludes Round ${next.round}.`,
+      },
+      'local'
+    );
     TurnManager.advanceTurn(next);
     return { state: next };
   },

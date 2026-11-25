@@ -319,18 +319,77 @@ function buildWeatherModifiers(terrain: LocationTerrain): Record<WeatherType, Lo
       moveMod: 0,
       combatMod: 0,
     },
-    mist: {
-      description: { uk: 'Туман: +1 до захисту в засідках', en: 'Mist: +1 Defense in cover' },
-      moveMod: 0,
-      combatMod: 1,
-    },
     rain: {
       description: {
-        uk: terrain === 'pass' || terrain === 'wilds' ? 'Злива: -1 до темпу на бездоріжжі' : 'Злива: слизька дорога',
-        en: terrain === 'pass' || terrain === 'wilds' ? 'Rain: -1 pace on muddy trails' : 'Rain: slick ground',
+        uk: terrain === 'pass' || terrain === 'wilds' ? 'Дощ: -1 до темпу на стежках' : 'Дощ: вологі дороги',
+        en: terrain === 'pass' || terrain === 'wilds' ? 'Rain: -1 pace on trails' : 'Rain: wet roads',
       },
       moveMod: terrain === 'pass' || terrain === 'wilds' ? -1 : 0,
       combatMod: 0,
+    },
+    heavy_rain: {
+      description: {
+        uk: 'Сильна злива: -1 до руху, важчий фізичний бій',
+        en: 'Heavy Rain: -1 movement, hampered physical strikes',
+      },
+      moveMod: -1,
+      combatMod: -1,
+    },
+    mist: {
+      description: {
+        uk: 'Туман: приховує засідки та допомагає відступити',
+        en: 'Mist: conceals ambushes and aids retreat',
+      },
+      moveMod: 0,
+      combatMod: 1,
+    },
+    magic_fog: {
+      description: {
+        uk: 'Магічний туман: приховує зустріч, посилює чари',
+        en: 'Arcane Fog: conceals encounters, amplifies magic',
+      },
+      moveMod: 0,
+      combatMod: terrain === 'shrine' || terrain === 'ruins' ? 1 : 0,
+    },
+    snow: {
+      description: {
+        uk: terrain === 'pass' || terrain === 'wilds' ? 'Сніг: замети (-1 до руху)' : 'Сніг: тихі укріплення',
+        en: terrain === 'pass' || terrain === 'wilds' ? 'Snow: drifts (-1 move)' : 'Snow: quiet ramparts',
+      },
+      moveMod: terrain === 'pass' || terrain === 'wilds' ? -1 : 0,
+      combatMod: 0,
+    },
+    blizzard: {
+      description: {
+        uk: terrain === 'pass' ? 'Заметіль: гірський перехід завалено!' : 'Заметіль: -2 до темпу та сильний мороз',
+        en: terrain === 'pass' ? 'Blizzard: mountain pass blocked!' : 'Blizzard: -2 pace and fierce frost',
+      },
+      moveMod: -2,
+      combatMod: -1,
+    },
+    heat: {
+      description: {
+        uk: terrain === 'sanctuary' || terrain === 'village' ? 'Спека: укриття рятують від знемоги' : 'Спека: виснаження (-1 до захисту)',
+        en: terrain === 'sanctuary' || terrain === 'village' ? 'Heat: shelters ease fatigue' : 'Heat: exhaustion (-1 Defense)',
+      },
+      moveMod: terrain === 'wilds' || terrain === 'pass' ? -1 : 0,
+      combatMod: terrain === 'sanctuary' || terrain === 'village' ? 0 : -1,
+    },
+    dry_wind: {
+      description: {
+        uk: 'Суховій: сухий пил несе пориви люті',
+        en: 'Dry Wind: parched dust carries fierce gusts',
+      },
+      moveMod: 0,
+      combatMod: terrain === 'fortress' || terrain === 'ruins' ? 1 : 0,
+    },
+    thunderstorm: {
+      description: {
+        uk: 'Гроза: блискавки заряджають магічні події',
+        en: 'Thunderstorm: lightning sparks magic events',
+      },
+      moveMod: -1,
+      combatMod: terrain === 'shrine' ? 1 : 0,
     },
     ash_storm: {
       description: { uk: 'Попеляста буря: -1 до захисту, +1 до люті бою', en: 'Ash Storm: -1 Defense, +1 Attack fury' },

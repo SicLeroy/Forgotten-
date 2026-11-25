@@ -98,9 +98,9 @@ const ITEM_SPECS: ItemSpec[] = [
     rarity: 'common',
     cost: 10,
     combatOnly: true,
-    effect: { bonusDefense: 3, bonusAttack: 1 },
-    descUk: 'Лише в бою: прикриває від ударів (+3 захисту, +1 атаки).',
-    descEn: 'Combat only: shrouds your stance (+3 Defense, +1 Attack).',
+    effect: { bonusDefense: 3, bonusAttack: 1, allowFlee: true },
+    descUk: 'Лише в бою: прикриває від ударів (+3 захисту, +1 атаки) та відкриває втечу.',
+    descEn: 'Combat only: shrouds your stance (+3 Defense, +1 Attack) and unlocks flee.',
   },
   {
     id: 'card_054',

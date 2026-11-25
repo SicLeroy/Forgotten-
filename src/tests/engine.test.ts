@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict';
 import {
+  resolveAmbientProfileKey,
+  soundEngine,
+  WORLD_EVENT_AMBIENT_PROFILES,
+} from '../audio/SoundEngine';
+import {
   ADVENTURE_DECK_CARD_IDS,
   CARD_CATEGORY_COUNTS,
   CARD_MAP,
@@ -9,17 +14,41 @@ import {
 import { ENEMY_MAP } from '../data/enemies';
 import { HEROES } from '../data/heroes';
 import { LOCATION_MAP, LOCATIONS } from '../data/locations';
+import { NPCS } from '../data/npcs';
 import { REGIONS } from '../data/regions';
 import { TEST_SCENARIO_PRESETS } from '../data/testFixtures';
+import { MAJOR_WORLD_EVENTS } from '../data/worldEvents';
+import { inferChronicleScope } from '../engine/ChronicleHelper';
+import { DayNightManager, HIDDEN_NIGHT_PASSAGES } from '../engine/DayNightManager';
 import { GameManager } from '../engine/GameManager';
 import { NavigationGraph } from '../engine/NavigationGraph';
+import { NpcManager } from '../engine/NpcManager';
 import { RandomManager } from '../engine/RandomManager';
-import { getActivePlayer, getPlayerEffectiveStats, RulesEngine } from '../engine/RulesEngine';
+import {
+  canFleeCombat,
+  computeCombatPreview,
+  getActivePlayer,
+  getPlayerEffectiveStats,
+  RulesEngine,
+} from '../engine/RulesEngine';
 import { TurnManager } from '../engine/TurnManager';
+import {
+  CORE_WEATHER_TYPES,
+  WEATHER_PROFILES,
+  WeatherManager,
+} from '../engine/WeatherManager';
+import { MAX_ACTIVE_MAJOR_EVENTS, WorldEventManager } from '../engine/WorldEventManager';
 import { rollD6 } from '../engine/rng';
 import { LocalizationManager } from '../i18n/LocalizationManager';
 import { SaveManager } from '../storage/SaveManager';
-import { CardCategory, GameState, HERO_INVENTORY_LIMITS, SectorId } from '../types/game';
+import {
+  CardCategory,
+  GameState,
+  HERO_INVENTORY_LIMITS,
+  MajorWorldEventId,
+  NpcRole,
+  SectorId,
+} from '../types/game';
 
 function runTest(name: string, fn: () => void): void {
   fn();
@@ -991,4 +1020,652 @@ runTest('Inventory limits (1 weapon, 1 armor, 3 companions, 6 items), trade, hea
   );
 });
 
+runTest('Full combat system: physical & magic formulas, defender tie-breaks, strict flee rules, special effects, PvP, and hero defeat', () => {
+  // 1. Physical vs Magic Combat Previews & Special Effects (stone_armor & arcane_ward)
+  let state = RulesEngine.createNewGame({
+    mode: 'local_hotseat',
+    seed: 112233,
+    playerConfigs: [{ name: 'Arcanist', heroId: 'hero_02', isAI: false }],
+  });
+  state.weather = 'clear';
+  state.timeOfDay = 'day';
+  state.turnPhase = 'COMBAT';
+  state.combat = {
+    enemyId: 'enemy_r1_golem', // has specialEffectType: 'stone_armor', attack: 4, intellect: 1
+    enemyCurrentHp: 15,
+    enemyMaxHp: 15,
+    isDefending: false,
+    roundCount: 1,
+    lastPlayerRoll: null,
+    lastEnemyRoll: null,
+    combatLog: [],
+    combatPurpose: 'roaming',
+  };
+
+  const physPrev = computeCombatPreview(state, 'physical')!;
+  const magPrev = computeCombatPreview(state, 'magic')!;
+  assert.equal(physPrev.enemySpecialEffect, 'stone_armor');
+  assert.ok(
+    physPrev.heroModifiers < magPrev.heroModifiers,
+    'Stone Armor must penalize physical combat relative to magic combat'
+  );
+  assert.equal(physPrev.enemyStat, 4, 'Physical combat matches enemy attack/STR stat');
+  assert.equal(magPrev.enemyStat, 1, 'Magic combat matches enemy intellect stat');
+
+  // Execute magic attack & verify CombatRoundBreakdown & combatLog populated
+  const afterMagic = RulesEngine.combatAttack(state, 'magic');
+  assert.equal(afterMagic.error, undefined);
+  state = afterMagic.state;
+  const logAfterMagic = state.combat?.combatLog ?? [];
+  assert.equal(logAfterMagic.length, 1);
+  assert.equal(logAfterMagic[0].combatType, 'magic');
+  assert.equal(
+    logAfterMagic[0].heroTotal,
+    logAfterMagic[0].heroBaseStat +
+      logAfterMagic[0].heroGearBonus +
+      logAfterMagic[0].heroModifiers +
+      logAfterMagic[0].heroRoll
+  );
+  assert.equal(
+    logAfterMagic[0].enemyTotal,
+    logAfterMagic[0].enemyStat + logAfterMagic[0].enemyModifiers + logAfterMagic[0].enemyRoll
+  );
+
+  // 2. Deterministic Tie-Break Rule: Defender wins ties
+  // Find a seed where player d6 === enemy d6 so we force heroTotal === enemyTotal
+  let tieSeed = 1;
+  while (tieSeed < 500) {
+    const r1 = rollD6(tieSeed);
+    const r2 = rollD6(r1.nextState);
+    if (r1.roll === r2.roll) break;
+    tieSeed++;
+  }
+  let tieState = RulesEngine.createNewGame({
+    mode: 'local_hotseat',
+    seed: 334455,
+    playerConfigs: [{ name: 'TieTester', heroId: 'hero_01', isAI: false }],
+  });
+  tieState.weather = 'clear';
+  tieState.timeOfDay = 'day';
+  tieState.activeWorldEventId = null;
+  tieState.rngState = tieSeed;
+  tieState.players[0].hp = 6;
+  tieState.players[0].equipment = { weapon: null, armor: null, talisman: null };
+  tieState.players[0].strength = 5;
+  tieState.players[0].tempAttackBonus = 0;
+  tieState.turnPhase = 'COMBAT';
+  tieState.combat = {
+    enemyId: 'enemy_r1_bandit',
+    enemyNameOverride: { uk: 'Дуелянт-тренер', en: 'Sparring Duelist' },
+    enemyAttackOverride: 5,
+    enemyIntellectOverride: 5,
+    enemyDefenseOverride: 1,
+    enemySpecialEffect: 'none',
+    enemyCurrentHp: 6,
+    enemyMaxHp: 6,
+    isDefending: false,
+    roundCount: 1,
+    lastPlayerRoll: null,
+    lastEnemyRoll: null,
+    combatLog: [],
+    combatPurpose: 'roaming',
+  };
+  const tieAttackRes = RulesEngine.combatAttack(tieState, 'physical').state;
+  const tieBreakdown = tieAttackRes.combat?.lastBreakdown;
+  assert.ok(tieBreakdown, 'Must record tie breakdown');
+  assert.equal(tieBreakdown.heroTotal, tieBreakdown.enemyTotal, 'Constructed totals must be equal');
+  assert.equal(tieBreakdown.wasTie, true);
+  assert.equal(tieBreakdown.winner, 'enemy', 'Defender (Enemy) must win ties on hero attack');
+  assert.equal(tieAttackRes.players[0].hp, 5, 'Hero must lose exactly 1 HP on lost/tied clash');
+
+  // Verify Defend stance tie favors Hero (Hero IS Defender)
+  let defendTieSeed = 1;
+  while (defendTieSeed < 500) {
+    const r1 = rollD6(defendTieSeed);
+    const r2 = rollD6(r1.nextState);
+    if (r1.roll === r2.roll) break;
+    defendTieSeed++;
+  }
+  let defState = { ...tieState, rngState: defendTieSeed };
+  defState.players = [{ ...tieState.players[0], hp: 5, armor: 1, strength: 4, tempDefenseBonus: 0 }]; // guard = 1 + 0 + 2 + 2 = 5
+  defState.combat = { ...tieState.combat, enemyAttackOverride: 5 };
+  const afterDefend = RulesEngine.combatDefend(defState).state;
+  const defBrk = afterDefend.combat?.lastBreakdown;
+  assert.ok(defBrk);
+  assert.equal(defBrk.wasTie, true);
+  assert.equal(defBrk.winner, 'player', 'Hero as Defender in Defend stance must win ties');
+  assert.equal(afterDefend.players[0].hp, 6, 'Successful defend grants 0 damage and +1 HP');
+
+  // 3. Strict Flee Rules: blocked by default for Warrior (hero_01), unlocked by escape card, Mist weather, or Rogue/Ranger
+  let fleeState = RulesEngine.createNewGame({
+    mode: 'local_hotseat',
+    seed: 445566,
+    playerConfigs: [{ name: 'Shieldbearer', heroId: 'hero_01', isAI: false }],
+  });
+  fleeState.weather = 'clear';
+  fleeState.turnPhase = 'COMBAT';
+  fleeState.combat = {
+    enemyId: 'enemy_r1_wolf',
+    enemyCurrentHp: 6,
+    enemyMaxHp: 6,
+    isDefending: false,
+    roundCount: 1,
+    lastPlayerRoll: null,
+    lastEnemyRoll: null,
+    combatPurpose: 'roaming',
+  };
+  assert.equal(canFleeCombat(fleeState).allowed, false);
+  const blockedFlee = RulesEngine.combatFlee(fleeState);
+  assert.ok(blockedFlee.error, 'Warrior without card/ability/mist must be blocked from fleeing');
+
+  // Mist weather allows fleeing non-bosses
+  fleeState.weather = 'mist';
+  assert.equal(canFleeCombat(fleeState).allowed, true, 'Mist weather rule unlocks flee');
+
+  // Escape card (card_053 Smoke Bomb) sets fleeAllowedByCard
+  fleeState.weather = 'clear';
+  fleeState.players[0].hand = ['card_053'];
+  fleeState = RulesEngine.playCard(fleeState, 'card_053').state;
+  assert.equal(fleeState.combat?.fleeAllowedByCard, true);
+  assert.equal(canFleeCombat(fleeState).allowed, true, 'Escape card unlocks flee');
+  fleeState.players[0].fate = 5;
+  const escaped = RulesEngine.combatFlee(fleeState);
+  assert.equal(escaped.error, undefined);
+  assert.equal(escaped.state.combat, null, 'Successful flee clears combat');
+  assert.equal(escaped.state.turnPhase, 'ACTION');
+
+  // Void Lord flee ALWAYS blocked even in Mist or with Rogue
+  let voidState = RulesEngine.createNewGame({
+    mode: 'local_hotseat',
+    seed: 445577,
+    playerConfigs: [{ name: 'Selene', heroId: 'hero_05', isAI: false }],
+  });
+  voidState.weather = 'mist';
+  voidState.turnPhase = 'COMBAT';
+  voidState.combat = {
+    enemyId: 'enemy_void_lord',
+    enemyCurrentHp: 22,
+    enemyMaxHp: 22,
+    isDefending: false,
+    fleeAllowedByCard: true,
+    fleeAllowedByAbility: true,
+    roundCount: 1,
+    lastPlayerRoll: null,
+    lastEnemyRoll: null,
+    combatPurpose: 'void_lord',
+  };
+  assert.equal(canFleeCombat(voidState).allowed, false, 'Cannot flee from Lord of the Void');
+  assert.ok(RulesEngine.combatFlee(voidState).error);
+
+  // 4. PvP Duel (challengePlayer) + Winner spoils + All-heroes-dead DEFEAT check
+  let pvpState = RulesEngine.createNewGame({
+    mode: 'local_hotseat',
+    seed: 556677,
+    playerConfigs: [
+      { name: 'Champion', heroId: 'hero_01', isAI: false },
+      { name: 'Challenger', heroId: 'hero_02', isAI: false },
+    ],
+  });
+  pvpState.players[0].locationId = 'loc_01';
+  pvpState.players[1].locationId = 'loc_01';
+  pvpState.players[0].strength = 12;
+  pvpState.players[0].tempAttackBonus = 10;
+  pvpState.players[1].gold = 15;
+  pvpState.players[1].hp = 1;
+
+  const pvpStart = RulesEngine.challengePlayer(pvpState, pvpState.players[1].id);
+  assert.equal(pvpStart.error, undefined);
+  pvpState = pvpStart.state;
+  assert.equal(pvpState.turnPhase, 'COMBAT');
+  assert.equal(pvpState.combat?.combatPurpose, 'pvp');
+  assert.equal(pvpState.combat?.enemyTier, 'pvp');
+
+  const goldBeforePvp = pvpState.players[0].gold;
+  const pvpResolved = RulesEngine.combatAttack(pvpState, 'physical').state;
+  assert.equal(pvpResolved.combat, null, 'PvP duel resolves cleanly');
+  assert.equal(pvpResolved.turnPhase, 'ACTION');
+  assert.ok(pvpResolved.players[0].gold > goldBeforePvp, 'Winner collects PvP gold spoils');
+  assert.equal(pvpResolved.players[1].isDefeated, true, 'Defender reduced to 0 HP is defeated');
+
+  // Solo player at 1 HP losing combat triggers DEFEAT phase
+  let soloDefeat = RulesEngine.createNewGame({
+    mode: 'local_hotseat',
+    seed: 667788,
+    playerConfigs: [{ name: 'Doomed', heroId: 'hero_02', isAI: false }],
+  });
+  soloDefeat.players[0].hp = 1;
+  soloDefeat.players[0].strength = 0;
+  soloDefeat.turnPhase = 'COMBAT';
+  soloDefeat.combat = {
+    enemyId: 'enemy_void_lord',
+    enemyAttackOverride: 25,
+    enemyCurrentHp: 22,
+    enemyMaxHp: 22,
+    isDefending: false,
+    roundCount: 1,
+    lastPlayerRoll: null,
+    lastEnemyRoll: null,
+    combatPurpose: 'void_lord',
+  };
+  soloDefeat = RulesEngine.combatAttack(soloDefeat, 'physical').state;
+  assert.equal(soloDefeat.players[0].isDefeated, true);
+  assert.equal(soloDefeat.phase, 'DEFEAT', 'Last living hero falling to 0 HP must end game in DEFEAT');
+});
+
+runTest('DayNightManager (6-round cycle, active-player round completion, bonuses, night passages) & WeatherManager (10 types, 3 regions, events, immutable dice)', () => {
+  // 1. Verify 6-round Day/Night cycle across Rounds 1..12 (1-3 Day, 4-6 Night)
+  for (let r = 1; r <= 12; r++) {
+    const info = DayNightManager.getCycleInfo(r);
+    const expectedNight = ((r - 1) % 6) + 1 >= 4;
+    assert.equal(info.isNight, expectedNight, `Round ${r} night check mismatch`);
+    assert.equal(info.phase, expectedNight ? 'night' : 'day');
+  }
+
+  // 2. Round advances ONLY after ALL active (living) players complete their turns
+  let cycleState = RulesEngine.createNewGame({
+    mode: 'local_hotseat',
+    seed: 112233,
+    playerConfigs: [
+      { name: 'P1', heroId: 'hero_01', isAI: false },
+      { name: 'P2', heroId: 'hero_02', isAI: false },
+      { name: 'P3', heroId: 'hero_05', isAI: false },
+    ],
+  });
+  cycleState.players[1].isDefeated = true; // P2 defeated; active living players = P1 and P3
+  cycleState.players[1].hp = 0;
+
+  assert.equal(cycleState.round, 1);
+  assert.equal(cycleState.dayNightPhase, 'day');
+
+  // End P1 -> skips defeated P2, lands on P3, STILL Round 1
+  cycleState = RulesEngine.endTurn(cycleState).state;
+  assert.equal(cycleState.activePlayerIndex, 2, 'Should skip defeated P2 and hand off to living P3');
+  assert.equal(cycleState.round, 1, 'Round must not increment until all living players finish');
+
+  // End P3 -> completes Round 1 -> starts Round 2
+  cycleState = RulesEngine.endTurn(cycleState).state;
+  assert.equal(cycleState.activePlayerIndex, 0);
+  assert.equal(cycleState.round, 2);
+  assert.equal(cycleState.dayNightPhase, 'day');
+
+  // Advance Rounds 2 and 3 (2 turns each) -> reaches Round 4 (Night!)
+  for (let i = 0; i < 4; i++) {
+    cycleState = RulesEngine.endTurn(cycleState).state;
+  }
+  assert.equal(cycleState.round, 4);
+  assert.equal(cycleState.dayNightPhase, 'night', 'Round 4 must transition to Night phase');
+  assert.equal(cycleState.timeOfDay, 'night');
+
+  // Advance Rounds 4, 5, 6 (6 turns total) -> reaches Round 7 (back to Day!)
+  for (let i = 0; i < 6; i++) {
+    cycleState = RulesEngine.endTurn(cycleState).state;
+  }
+  assert.equal(cycleState.round, 7);
+  assert.equal(cycleState.dayNightPhase, 'day', 'Round 7 must cycle back to Day phase');
+
+  // 3. All 10 core weather types exist with profiles and regional effects across all 3 regions
+  assert.equal(CORE_WEATHER_TYPES.length, 10, 'Must have 10 core weather types');
+  const regions = ['reg_sunspire_vale', 'reg_ashen_marches', 'reg_abyssal_citadel'] as const;
+  for (const w of CORE_WEATHER_TYPES) {
+    const profile = WEATHER_PROFILES[w];
+    assert.ok(profile, `Missing weather profile for ${w}`);
+    assert.ok(profile.name.uk.length > 0 && profile.name.en.length > 0);
+    for (const regId of regions) {
+      const regEff = WeatherManager.getRegionWeatherEffect(w, regId);
+      assert.ok(regEff.description.uk.length > 0 && regEff.description.en.length > 0);
+    }
+  }
+
+  // Regional weather probabilities depend on region
+  const outerPool = new Map(
+    WeatherManager.getWeightedWeatherPool('reg_sunspire_vale', false).map((i) => [i.weather, i.weight])
+  );
+  const innerPool = new Map(
+    WeatherManager.getWeightedWeatherPool('reg_abyssal_citadel', true).map((i) => [i.weather, i.weight])
+  );
+  assert.ok((outerPool.get('clear') ?? 0) > (innerPool.get('clear') ?? 0), 'Outer Vale favors clear weather more than Inner Citadel');
+  assert.ok((innerPool.get('magic_fog') ?? 0) > (outerPool.get('magic_fog') ?? 0), 'Inner Citadel favors arcane fog more than Outer Vale');
+
+  // Weather duration countdown & automatic weather transition
+  let durState = RulesEngine.createNewGame({
+    mode: 'local_hotseat',
+    seed: 223344,
+    playerConfigs: [{ name: 'WeatherWatch', heroId: 'hero_07', isAI: false }],
+  });
+  WeatherManager.shiftWeather(durState, 'rain', 2);
+  assert.equal(durState.weatherDurationRemaining, 2);
+  const r1 = WeatherManager.advanceRoundWeather(durState);
+  assert.equal(r1.changed, false);
+  assert.equal(r1.durationRemaining, 1);
+  const r2 = WeatherManager.advanceRoundWeather(durState);
+  assert.equal(r2.changed, true);
+  assert.ok(CORE_WEATHER_TYPES.includes(r2.weather));
+
+  // 4. Blizzard closes mountain pass transitions ('pass' terrain)
+  const passLoc = LOCATIONS.find((l) => l.terrain === 'pass')!;
+  const nonPassNeighbor = LOCATIONS.find(
+    (l) => l.terrain !== 'pass' && l.neighbors.includes(passLoc.id) && l.accessCondition.type === 'open'
+  )!;
+  let blizState = RulesEngine.createNewGame({
+    mode: 'local_hotseat',
+    seed: 334466,
+    playerConfigs: [{ name: 'Mountaineer', heroId: 'hero_01', isAI: false }],
+  });
+  blizState.players[0].gateGuardianDefeated = true;
+  blizState.players[0].seals = ['seal_power', 'seal_wisdom', 'seal_fate'];
+  blizState.players[0].locationId = nonPassNeighbor.id;
+  WeatherManager.shiftWeather(blizState, 'blizzard', 2);
+
+  const passAccess = NavigationGraph.canAccessLocation(
+    blizState.players[0],
+    passLoc.id,
+    blizState,
+    nonPassNeighbor.id
+  );
+  assert.equal(passAccess.allowed, false, 'Blizzard must block mountain pass entry');
+  const blockedPassMove = RulesEngine.moveToLocation(blizState, passLoc.id);
+  assert.ok(blockedPassMove.error, 'moveToLocation into mountain pass must fail in Blizzard');
+
+  WeatherManager.shiftWeather(blizState, 'clear', 2);
+  const openPassMove = RulesEngine.moveToLocation(blizState, passLoc.id);
+  assert.equal(openPassMove.error, undefined, 'Mountain pass must reopen when Blizzard clears');
+
+  // 5. Night opens HIDDEN_NIGHT_PASSAGES (closed during Day, open Rounds 4-6)
+  const samplePassage = HIDDEN_NIGHT_PASSAGES[0]; // loc_06 <-> loc_25
+  let nightMoveState = RulesEngine.createNewGame({
+    mode: 'local_hotseat',
+    seed: 445588,
+    playerConfigs: [{ name: 'Shadow', heroId: 'hero_05', isAI: false }],
+  });
+  nightMoveState.players[0].locationId = samplePassage.from;
+  nightMoveState.weather = 'clear';
+  // Round 1 = Day -> hidden night passage closed
+  assert.equal(DayNightManager.isNight(nightMoveState), false);
+  const dayPassageAttempt = RulesEngine.moveToLocation(nightMoveState, samplePassage.to);
+  assert.ok(dayPassageAttempt.error, 'Hidden night passage must be closed during Day rounds 1-3');
+
+  // Round 4 = Night -> hidden night passage open!
+  nightMoveState.round = 4;
+  DayNightManager.syncState(nightMoveState);
+  assert.equal(DayNightManager.isNight(nightMoveState), true);
+  const nightNeighbors = NavigationGraph.getNeighborStatuses(
+    nightMoveState.players[0],
+    samplePassage.from,
+    nightMoveState
+  );
+  assert.ok(
+    nightNeighbors.some((n) => n.location.id === samplePassage.to && n.isNightPassage && n.allowed),
+    'Hidden night passage must appear as open neighbor during Night'
+  );
+  const nightPassageAttempt = RulesEngine.moveToLocation(nightMoveState, samplePassage.to);
+  assert.equal(nightPassageAttempt.error, undefined, 'Hidden night passage must be traversable at Night');
+  assert.equal(nightPassageAttempt.state.players[0].locationId, samplePassage.to);
+
+  // 6. Mist / Arcane Fog conceals arrival combat encounters and unlocks combat flee
+  let ambushRng = 1;
+  while (ambushRng < 200) {
+    if (rollD6(ambushRng).roll <= 2) break;
+    ambushRng++;
+  }
+  const highDangerWild = LOCATIONS.find(
+    (l) => l.dangerLevel >= 4 && l.terrain !== 'village' && l.terrain !== 'sanctuary' && l.accessCondition.type === 'open'
+  ) ?? LOCATIONS.find((l) => l.dangerLevel >= 4 && l.terrain !== 'village' && l.terrain !== 'sanctuary')!;
+  const adjToDanger = LOCATION_MAP.get(highDangerWild.neighbors[0])!;
+
+  let fogState = RulesEngine.createNewGame({
+    mode: 'local_hotseat',
+    seed: 556688,
+    playerConfigs: [{ name: 'Scout', heroId: 'hero_01', isAI: false }],
+  });
+  fogState.players[0].gateGuardianDefeated = true;
+  fogState.players[0].seals = ['seal_power', 'seal_wisdom', 'seal_fate'];
+  fogState.players[0].locationId = adjToDanger.id;
+  fogState.rngState = ambushRng;
+  WeatherManager.shiftWeather(fogState, 'mist', 2);
+  fogState = RulesEngine.moveToLocation(fogState, highDangerWild.id).state;
+  assert.notEqual(
+    fogState.turnPhase,
+    'COMBAT',
+    'Mist weather must conceal arrival ambush encounters'
+  );
+
+  // 7. Thunderstorm activates magic weather events on shrine/ruins and round storm event
+  const shrineLoc = LOCATIONS.find((l) => l.terrain === 'shrine')!;
+  let stormState = RulesEngine.createNewGame({
+    mode: 'local_hotseat',
+    seed: 667799,
+    playerConfigs: [{ name: 'Stormcaster', heroId: 'hero_02', isAI: false }],
+  });
+  stormState.players[0].locationId = shrineLoc.id;
+  WeatherManager.shiftWeather(stormState, 'thunderstorm', 2);
+  const xpBeforeStorm = stormState.players[0].experience;
+  stormState = RulesEngine.exploreLocation(stormState).state;
+  assert.ok(
+    stormState.players[0].experience > xpBeforeStorm,
+    'Thunderstorm at a shrine must trigger magic weather event (+XP / +Attack)'
+  );
+
+  // 8. Locked Dice Rule: shifting weather/time MUST NEVER alter an already-determined dice roll
+  let lockedDiceState = RulesEngine.createNewGame({
+    mode: 'local_hotseat',
+    seed: 778899,
+    playerConfigs: [{ name: 'FairRoller', heroId: 'hero_01', isAI: false }],
+  });
+  lockedDiceState = RulesEngine.rollMovement(lockedDiceState).state;
+  const lockedRaw = lockedDiceState.movement!.rawRoll;
+  const lockedTotal = lockedDiceState.movement!.totalRoll;
+  const lockedSteps = lockedDiceState.movement!.stepsRemaining;
+  const lockedLastDice = lockedDiceState.lastDiceRoll;
+  const lockedHistoryRoll = lockedDiceState.diceHistory![0].roll;
+
+  WeatherManager.shiftWeather(lockedDiceState, 'blizzard', 2);
+  lockedDiceState.round = 4;
+  DayNightManager.syncState(lockedDiceState);
+
+  assert.equal(lockedDiceState.movement!.rawRoll, lockedRaw, 'rawRoll must stay immutable after weather/time change');
+  assert.equal(lockedDiceState.movement!.totalRoll, lockedTotal, 'totalRoll must stay immutable after weather/time change');
+  assert.equal(lockedDiceState.movement!.stepsRemaining, lockedSteps, 'stepsRemaining must stay immutable');
+  assert.equal(lockedDiceState.lastDiceRoll, lockedLastDice, 'lastDiceRoll must stay immutable');
+  assert.equal(lockedDiceState.diceHistory![0].roll, lockedHistoryRoll, 'diceHistory record must stay immutable');
+});
+
+runTest('WorldEventManager enforces 10 events, max 2 concurrent, escalation, non-blocking gates, and cross-system modifiers', () => {
+  // 1. All 10 required Major World Events exist with 3 stages and bilingual strings
+  assert.equal(MAJOR_WORLD_EVENTS.length, 10, 'Must have exactly 10 Major World Events');
+  const requiredIds: MajorWorldEventId[] = [
+    'major_dragon_awakening',
+    'major_demon_rift',
+    'major_spreading_curse',
+    'major_blood_eclipse',
+    'major_black_plague',
+    'major_undead_invasion',
+    'major_arcane_storm',
+    'major_vanishing_caravans',
+    'major_monster_uprising',
+    'major_ancient_temple',
+  ];
+  for (const id of requiredIds) {
+    const def = MAJOR_WORLD_EVENTS.find((e) => e.id === id);
+    assert.ok(def, `Missing Major World Event ${id}`);
+    assert.equal(def!.stages.length, 3, `Event ${id} must have 3 stages`);
+    assert.ok(def!.name.uk.length > 0 && def!.name.en.length > 0);
+    assert.ok(def!.questTitle.uk.length > 0 && def!.questTitle.en.length > 0);
+  }
+
+  // 2. Maximum 2 concurrent active major events enforced
+  let state = RulesEngine.createNewGame({
+    mode: 'local_hotseat',
+    seed: 901122,
+    playerConfigs: [{ name: 'ChronicleHero', heroId: 'hero_01', isAI: false }],
+  });
+  const s1 = WorldEventManager.spawnMajorEvent(state, 'major_black_plague');
+  assert.equal(s1.spawned, true);
+  assert.equal(state.weather, 'heavy_rain', 'Spawning Black Plague must shift weather');
+
+  const s2 = WorldEventManager.spawnMajorEvent(state, 'major_undead_invasion');
+  assert.equal(s2.spawned, true);
+  assert.equal(WorldEventManager.getActiveEvents(state).length, MAX_ACTIVE_MAJOR_EVENTS);
+
+  const s3 = WorldEventManager.spawnMajorEvent(state, 'major_dragon_awakening');
+  assert.equal(s3.spawned, false, 'Must not exceed MAX_ACTIVE_MAJOR_EVENTS = 2');
+  assert.equal(WorldEventManager.getActiveEvents(state).length, 2);
+
+  // 3. Cross-system modifiers reflect active events and escalation worsens when ignored
+  const modBeforeEscalation = WorldEventManager.getEnemyAttackModifier(state);
+  WorldEventManager.advanceRoundEvents(state); // Ignored round -> escalates to Stage 2
+  assert.equal(state.activeMajorEvents![0].stage, 2, 'Ignored event should escalate to Stage 2');
+  assert.ok(
+    WorldEventManager.getEnemyAttackModifier(state) >= modBeforeEscalation,
+    'Escalating events must increase or maintain pressure'
+  );
+  // Main progression gate access must NEVER be blocked by world events
+  state.players[0].gateGuardianDefeated = true;
+  const midGate = NavigationGraph.canAccessLocation(state.players[0], 'loc_43');
+  assert.equal(midGate.allowed, true, 'World events must never block main progression routes');
+
+  // 4. Hero intervention advances progress, applies world reaction & grants rewards on completion
+  let interventionState = RulesEngine.createNewGame({
+    mode: 'local_hotseat',
+    seed: 903344,
+    playerConfigs: [{ name: 'EventHero', heroId: 'hero_01', isAI: false }],
+  });
+  WorldEventManager.spawnMajorEvent(interventionState, 'major_vanishing_caravans');
+  const activeEvt = interventionState.activeMajorEvents![0];
+  const eventDef = WorldEventManager.getDefinition(activeEvt.id);
+  interventionState.players[0].locationId = activeEvt.targetLocationId;
+  interventionState.players[0].gold = 50;
+  interventionState.players[0].actionsRemaining = 4;
+
+  // Market price modifier active during Vanishing Caravans
+  assert.ok(
+    WorldEventManager.getMarketPriceModifier(interventionState) > 0,
+    'Vanishing Caravans must raise market prices'
+  );
+
+  // Intervene via RulesEngine until resolved
+  let safety = 0;
+  while ((interventionState.activeMajorEvents ?? []).length > 0 && safety < 5) {
+    interventionState.players[0].actionsRemaining = 3;
+    const res = RulesEngine.interveneWorldEvent(interventionState, 'major_vanishing_caravans');
+    assert.equal(res.error, undefined, res.error?.en);
+    interventionState = res.state;
+    safety++;
+  }
+  assert.equal(interventionState.activeMajorEvents!.length, 0, 'Event must complete and clear');
+  assert.ok(
+    interventionState.completedMajorEventIds!.includes('major_vanishing_caravans'),
+    'Completed event ID must be recorded'
+  );
+  assert.ok(
+    interventionState.players[0].experience >= eventDef.rewards.xp,
+    'Completing major event must grant XP reward'
+  );
+
+  // Chronicle scoping checks: global vs local
+  const hasGlobalWorldEntry = interventionState.chronicle.some(
+    (c) => (c.scope ?? inferChronicleScope(c.type, c.playerId)) === 'global'
+  );
+  const hasLocalAdventureEntry = interventionState.chronicle.some(
+    (c) => (c.scope ?? inferChronicleScope(c.type, c.playerId)) === 'local'
+  );
+  assert.equal(hasGlobalWorldEntry, true, 'Chronicle must record global world events');
+  assert.equal(hasLocalAdventureEntry, true, 'Chronicle must record local hero adventures');
+});
+
+runTest('NpcManager supports all 4 roles, reactive world dialogue, quests, and services', () => {
+  const rolesCovered = new Set<NpcRole>(NPCS.map((n) => n.role));
+  assert.equal(rolesCovered.has('merchant'), true);
+  assert.equal(rolesCovered.has('traveler'), true);
+  assert.equal(rolesCovered.has('quest_giver'), true);
+  assert.equal(rolesCovered.has('special'), true);
+
+  let state = RulesEngine.createNewGame({
+    mode: 'local_hotseat',
+    seed: 912233,
+    playerConfigs: [{ name: 'Diplomat', heroId: 'hero_04', isAI: false }],
+  });
+  WorldEventManager.spawnMajorEvent(state, 'major_black_plague');
+
+  // Talk to an NPC present at the active hero's location
+  const npcsHere = NpcManager.getNpcsAtLocation(state.players[0].locationId);
+  assert.ok(npcsHere.length > 0, 'Hero starting location must have NPCs available');
+  const questNpc = npcsHere.find((n) => Boolean(n.quest)) ?? npcsHere[0];
+
+  const talkRes = RulesEngine.talkToNpc(state, questNpc.id);
+  assert.equal(talkRes.error, undefined, talkRes.error?.en);
+  state = talkRes.state;
+  assert.equal(state.activeNpcDialog?.npcId, questNpc.id);
+  assert.ok(
+    state.activeNpcDialog?.dynamicNote,
+    'NPC dialogue must react dynamically to active major world events'
+  );
+
+  if (questNpc.quest) {
+    const acceptOpt = NpcManager.getAvailableOptions(
+      state,
+      state.players[0],
+      questNpc,
+      state.activeNpcDialog!.nodeId
+    ).find((o) => o.action === 'accept_quest');
+    if (acceptOpt) {
+      state = RulesEngine.chooseNpcDialogOption(state, acceptOpt.id).state;
+      assert.equal(state.npcStates?.[questNpc.id]?.questStatus, 'active');
+
+      // Satisfy quest progress & turn in
+      state.npcStates![questNpc.id].questProgress = questNpc.quest.targetCount;
+      state = RulesEngine.talkToNpc(state, questNpc.id).state;
+      const turnInOpt = NpcManager.getAvailableOptions(
+        state,
+        state.players[0],
+        questNpc,
+        state.activeNpcDialog!.nodeId
+      ).find((o) => o.action === 'complete_quest');
+      assert.ok(turnInOpt, 'Quest turn-in option should appear once targetCount is met');
+      const xpBefore = state.players[0].experience;
+      state = RulesEngine.chooseNpcDialogOption(state, turnInOpt!.id).state;
+      assert.equal(state.npcStates?.[questNpc.id]?.questStatus, 'completed');
+      assert.ok(state.players[0].experience > xpBefore, 'Quest completion must grant XP');
+    }
+  }
+
+  state = RulesEngine.closeNpcDialog(state).state;
+  assert.equal(state.activeNpcDialog, null);
+});
+
+runTest('SoundEngine dynamically selects ambient profiles for all 10 world events including Black Plague wind and Undead Invasion drums', () => {
+  // Verify every major world event has a distinct ambient profile
+  assert.equal(resolveAmbientProfileKey([], null), 'calm');
+
+  const plagueKey = soundEngine.setActiveWorldEvents(['major_black_plague'], null);
+  assert.equal(plagueKey, 'major_black_plague');
+  const plagueProfile = soundEngine.getActiveAmbientProfile();
+  assert.equal(plagueProfile.layerType, 'plague_wind', 'Black Plague must trigger ominous wind layer');
+  assert.ok((plagueProfile.windBandpassFreq ?? 0) > 0, 'Black Plague profile must configure wind filter');
+
+  const undeadKey = soundEngine.setActiveWorldEvents(['major_undead_invasion'], null);
+  assert.equal(undeadKey, 'major_undead_invasion');
+  const undeadProfile = soundEngine.getActiveAmbientProfile();
+  assert.equal(undeadProfile.layerType, 'battle_drums', 'Undead Invasion must trigger battle drums layer');
+  assert.ok((undeadProfile.drumPattern?.length ?? 0) >= 4, 'Undead Invasion profile must define battle drum beats');
+
+  // Verify all 10 MajorWorldEventIds resolve cleanly and reset to calm
+  for (const def of MAJOR_WORLD_EVENTS) {
+    assert.ok(WORLD_EVENT_AMBIENT_PROFILES[def.id], `Missing ambient profile for ${def.id}`);
+    const resolved = soundEngine.setActiveWorldEvents([def.id], null);
+    assert.equal(resolved, def.id);
+    assert.equal(soundEngine.getActiveAmbientProfile().key, def.id);
+  }
+
+  // Priority uses latest active major event when 2 are active simultaneously
+  assert.equal(
+    resolveAmbientProfileKey(['major_black_plague', 'major_undead_invasion'], null),
+    'major_undead_invasion'
+  );
+
+  // Resets cleanly back to calm
+  assert.equal(soundEngine.setActiveWorldEvents([], null), 'calm');
+  assert.equal(soundEngine.getActiveAmbientProfile().layerType, 'lute_calm');
+});
+
 console.log('ALL TESTS PASSED SUCCESSFULLY.');
+

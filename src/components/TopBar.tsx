@@ -1,4 +1,6 @@
 import React from 'react';
+import { Music, Volume2, VolumeX } from 'lucide-react';
+import { useAudio } from '../App';
 import { t } from '../i18n/translations';
 import { GamePhase, Language } from '../types/game';
 
@@ -21,6 +23,7 @@ export const TopBar: React.FC<TopBarProps> = ({
   onChangeView,
   onReturnToTitle,
 }) => {
+  const { musicEnabled, sfxEnabled, volume, toggleMusic, toggleSfx, setVolume } = useAudio();
   const navItems: Array<{ id: ActiveView; label: string }> = [
     { id: 'table', label: t(lang, 'navTable') },
     { id: 'map', label: t(lang, 'navMap') },
@@ -30,7 +33,7 @@ export const TopBar: React.FC<TopBarProps> = ({
 
   return (
     <header className="border-b border-stone-800 bg-[#14171d]">
-      <div className="mx-auto flex max-w-[1440px] items-center justify-between gap-3 sm:gap-8 px-4 py-3.5 sm:px-6">
+      <div className="mx-auto flex max-w-[1440px] items-center justify-between gap-3 sm:gap-6 px-4 py-3.5 sm:px-6">
         <button
           type="button"
           onClick={onReturnToTitle}
@@ -69,7 +72,54 @@ export const TopBar: React.FC<TopBarProps> = ({
           })}
         </nav>
 
-        <div className="flex items-center shrink-0">
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={toggleMusic}
+            aria-pressed={musicEnabled}
+            title={t(lang, 'musicToggleLabel')}
+            className={`inline-flex items-center gap-1.5 rounded border px-2.5 py-2 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 min-h-[40px] focus-visible:outline-2 focus-visible:outline-amber-400 ${
+              musicEnabled
+                ? 'border-amber-500/70 bg-amber-950/40 text-amber-200'
+                : 'border-stone-700 bg-stone-900 text-stone-400 hover:text-stone-200'
+            }`}
+          >
+            <Music className="h-3.5 w-3.5" aria-hidden="true" />
+            <span className="hidden sm:inline">{t(lang, 'musicToggleLabel')}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={toggleSfx}
+            aria-pressed={sfxEnabled}
+            title={t(lang, 'sfxToggleLabel')}
+            className={`inline-flex items-center gap-1.5 rounded border px-2.5 py-2 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 min-h-[40px] focus-visible:outline-2 focus-visible:outline-amber-400 ${
+              sfxEnabled
+                ? 'border-emerald-600/70 bg-emerald-950/30 text-emerald-200'
+                : 'border-stone-700 bg-stone-900 text-stone-400 hover:text-stone-200'
+            }`}
+          >
+            {sfxEnabled ? (
+              <Volume2 className="h-3.5 w-3.5" aria-hidden="true" />
+            ) : (
+              <VolumeX className="h-3.5 w-3.5" aria-hidden="true" />
+            )}
+            <span className="hidden sm:inline">{t(lang, 'sfxToggleLabel')}</span>
+          </button>
+
+          <label className="hidden lg:inline-flex items-center gap-1.5 rounded border border-stone-800 bg-stone-900 px-2.5 py-1.5 min-h-[40px]">
+            <span className="sr-only">{t(lang, 'volumeLabel')}</span>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              value={Math.round(volume * 100)}
+              aria-label={t(lang, 'volumeLabel')}
+              onChange={(e) => setVolume(Number(e.target.value) / 100)}
+              className="w-16 accent-amber-500 cursor-pointer"
+            />
+          </label>
+
           <button
             type="button"
             onClick={onToggleLang}

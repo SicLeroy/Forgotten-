@@ -1,5 +1,7 @@
 import { LOCATIONS, LOCATION_MAP } from '../data/locations';
-import { LocalizedText, LocationDefinition, PlayerState } from '../types/game';
+import { GameState, LocalizedText, LocationDefinition, PlayerState } from '../types/game';
+import { DayNightManager } from './DayNightManager';
+import { WeatherManager } from './WeatherManager';
 
 export interface GraphValidationResult {
   valid: boolean;
@@ -24,7 +26,12 @@ export const NavigationGraph = {
     return LOCATION_MAP.get(locationId);
   },
 
-  canAccessLocation(player: PlayerState, targetLocationId: string): AccessCheckResult {
+  canAccessLocation(
+    player: PlayerState,
+    targetLocationId: string,
+    state?: Pick<GameState, 'weather'>,
+    fromLocationId?: string
+  ): AccessCheckResult {
     const loc = LOCATION_MAP.get(targetLocationId);
     if (!loc) {
       return {
@@ -47,30 +54,75 @@ export const NavigationGraph = {
       };
     }
 
+    if (state) {
+      const fromLoc = LOCATION_MAP.get(fromLocationId ?? player.locationId);
+      if (fromLoc) {
+        const weatherCheck = WeatherManager.isRouteBlockedByWeather(state.weather, fromLoc, loc);
+        if (weatherCheck.blocked) {
+          return {
+            allowed: false,
+            reason: weatherCheck.reason,
+          };
+        }
+      }
+    }
+
     return { allowed: true };
   },
 
   getNeighborStatuses(
     player: PlayerState,
-    locationId: string
+    locationId: string,
+    state?: Pick<GameState, 'weather' | 'round' | 'dayNightPhase' | 'timeOfDay'>
   ): Array<{
     location: LocationDefinition;
     allowed: boolean;
     reason?: LocalizedText;
+    isNightPassage?: boolean;
+    passageLabel?: LocalizedText;
   }> {
     const current = LOCATION_MAP.get(locationId);
     if (!current) return [];
-    return current.neighbors
+
+    const results: Array<{
+      location: LocationDefinition;
+      allowed: boolean;
+      reason?: LocalizedText;
+      isNightPassage?: boolean;
+      passageLabel?: LocalizedText;
+    }> = current.neighbors
       .map((id) => LOCATION_MAP.get(id))
       .filter((loc): loc is LocationDefinition => Boolean(loc))
       .map((loc) => {
-        const access = NavigationGraph.canAccessLocation(player, loc.id);
+        const access = NavigationGraph.canAccessLocation(player, loc.id, state, locationId);
         return {
           location: loc,
           allowed: access.allowed,
           reason: access.reason,
+          isNightPassage: false,
         };
       });
+
+    if (state && DayNightManager.isNight(state)) {
+      const seen = new Set(current.neighbors);
+      const hidden = DayNightManager.getHiddenPassagesForLocation(locationId, state);
+      for (const { targetId, passage } of hidden) {
+        if (seen.has(targetId)) continue;
+        const targetLoc = LOCATION_MAP.get(targetId);
+        if (!targetLoc) continue;
+        seen.add(targetId);
+        const access = NavigationGraph.canAccessLocation(player, targetId, state, locationId);
+        results.push({
+          location: targetLoc,
+          allowed: access.allowed,
+          reason: access.reason,
+          isNightPassage: true,
+          passageLabel: passage.name,
+        });
+      }
+    }
+
+    return results;
   },
 
   /**

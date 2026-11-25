@@ -58,13 +58,48 @@ export interface DiceRollRecord {
 
 export type TimeOfDay = 'dawn' | 'day' | 'dusk' | 'night';
 
+export type DayNightCyclePhase = 'day' | 'night';
+
 export type WeatherType =
   | 'clear'
-  | 'mist'
   | 'rain'
+  | 'heavy_rain'
+  | 'mist'
+  | 'magic_fog'
+  | 'snow'
+  | 'blizzard'
+  | 'heat'
+  | 'dry_wind'
+  | 'thunderstorm'
   | 'ash_storm'
   | 'frost_wind'
   | 'void_eclipse';
+
+export interface WeatherRegionalEffect {
+  description: LocalizedText;
+  moveMod: number;
+  physicalMod: number;
+  magicMod: number;
+  defenseMod: number;
+  dangerMod: number;
+}
+
+export interface WeatherProfile {
+  id: WeatherType;
+  name: LocalizedText;
+  description: LocalizedText;
+  minDuration: number;
+  maxDuration: number;
+  moveMod: number;
+  physicalMod: number;
+  magicMod: number;
+  defenseMod: number;
+  dangerMod: number;
+  blocksMountainPass: boolean;
+  concealsEncounter: boolean;
+  triggersMagicEvent: boolean;
+  regionEffects: Record<RegionId, WeatherRegionalEffect>;
+}
 
 export type RegionId =
   | 'reg_sunspire_vale'
@@ -188,6 +223,7 @@ export interface CardEffect {
   drawCards?: number;
   extraActions?: number;
   rerollFate?: boolean;
+  allowFlee?: boolean;
   removeCurse?: boolean;
   removeAllCurses?: boolean;
   statCheck?: {
@@ -344,6 +380,17 @@ export interface HeroDefinition {
   abilityType: HeroAbilityType;
 }
 
+export type CombatType = 'physical' | 'magic';
+
+export type EnemySpecialEffectType =
+  | 'none'
+  | 'stone_armor'
+  | 'arcane_ward'
+  | 'first_strike'
+  | 'burn_aura'
+  | 'curse_strike'
+  | 'void_oblivion';
+
 export interface EnemyDefinition {
   id: string;
   name: LocalizedText;
@@ -358,9 +405,12 @@ export interface EnemyDefinition {
     | 'void_lord';
   maxHp: number;
   attack: number;
+  intellect?: number;
   defense: number;
   goldReward: number;
+  xpReward?: number;
   sealReward?: SealType;
+  specialEffectType?: EnemySpecialEffectType;
   specialTrait: LocalizedText;
 }
 
@@ -426,28 +476,58 @@ export interface ActiveMovement {
   rollRecordId?: string;
 }
 
+export interface CombatRoundBreakdown {
+  round: number;
+  combatType: CombatType;
+  defenderSide: 'player' | 'enemy';
+  heroBaseStat: number;
+  heroGearBonus: number;
+  heroModifiers: number;
+  heroRoll: number;
+  heroTotal: number;
+  enemyStat: number;
+  enemyModifiers: number;
+  enemyRoll: number;
+  enemyTotal: number;
+  winner: 'player' | 'enemy';
+  wasTie: boolean;
+  hpLostByHero: number;
+  damageToEnemy: number;
+  specialEffectNote?: LocalizedText;
+  summary: LocalizedText;
+}
+
 export interface ActiveCombat {
   enemyId: string;
   enemyCardId?: string;
+  enemyTier?: EnemyDefinition['tier'] | 'pvp';
   enemyNameOverride?: LocalizedText;
   enemyAttackOverride?: number;
+  enemyIntellectOverride?: number;
   enemyDefenseOverride?: number;
   enemyGoldOverride?: number;
   enemyXpOverride?: number;
   enemyTraitOverride?: LocalizedText;
+  enemySpecialEffect?: EnemySpecialEffectType;
+  pvpDefenderId?: string;
   enemyCurrentHp: number;
   enemyMaxHp: number;
   isDefending: boolean;
+  fleeAllowedByCard?: boolean;
+  fleeAllowedByAbility?: boolean;
   roundCount: number;
   lastPlayerRoll: number | null;
   lastEnemyRoll: number | null;
+  lastBreakdown?: CombatRoundBreakdown | null;
+  combatLog?: CombatRoundBreakdown[];
   combatPurpose:
     | 'roaming'
     | 'card_enemy'
     | 'gate_guardian'
     | 'seal_guardian'
     | 'citadel_guardian'
-    | 'void_lord';
+    | 'void_lord'
+    | 'pvp';
 }
 
 export interface ActiveEncounter {
@@ -471,13 +551,170 @@ export interface ActiveEncounter {
   succeeded?: boolean;
 }
 
+export type ChronicleScope = 'global' | 'local';
+
 export interface ChronicleEntry {
   id: string;
   round: number;
   timeOfDay: TimeOfDay;
   playerId: string | null;
   type: 'system' | 'move' | 'combat' | 'card' | 'seal' | 'world' | 'trial';
+  scope?: ChronicleScope;
   text: LocalizedText;
+}
+
+export type MajorWorldEventId =
+  | 'major_dragon_awakening'
+  | 'major_demon_rift'
+  | 'major_spreading_curse'
+  | 'major_blood_eclipse'
+  | 'major_black_plague'
+  | 'major_undead_invasion'
+  | 'major_arcane_storm'
+  | 'major_vanishing_caravans'
+  | 'major_monster_uprising'
+  | 'major_ancient_temple';
+
+export type MajorWorldEventStage = 1 | 2 | 3;
+
+export type WorldReactionTrigger =
+  | 'combat_victory'
+  | 'explore'
+  | 'cleanse_curse'
+  | 'spell_cast'
+  | 'heal_or_rest'
+  | 'trade'
+  | 'npc_aid';
+
+export interface MajorWorldEventStageSpec {
+  stage: MajorWorldEventStage;
+  title: LocalizedText;
+  description: LocalizedText;
+  consequenceSummary: LocalizedText;
+  enemyAttackMod: number;
+  marketPriceDelta: number;
+  healingDelta: number;
+  spellAttackBonus: number;
+  nightDangerMod: number;
+  hpDrainOnEscalation: number;
+  cursePressure: boolean;
+}
+
+export interface MajorWorldEventDefinition {
+  id: MajorWorldEventId;
+  name: LocalizedText;
+  description: LocalizedText;
+  startText: LocalizedText;
+  minDuration: number;
+  maxDuration: number;
+  targetRegionId: RegionId | 'all';
+  interventionLocationIds: string[];
+  interventionTerrains: LocationTerrain[];
+  weatherShift: WeatherType;
+  weatherBias: WeatherType[];
+  dayNightImpact: LocalizedText;
+  locationImpact: LocalizedText;
+  cardImpact: LocalizedText;
+  questTitle: LocalizedText;
+  questDescription: LocalizedText;
+  requiredProgress: number;
+  interventionGoldCost: number;
+  interventionActionCost: number;
+  stages: [MajorWorldEventStageSpec, MajorWorldEventStageSpec, MajorWorldEventStageSpec];
+  rewards: {
+    gold: number;
+    xp: number;
+    hp: number;
+    fate: number;
+    drawCards: number;
+  };
+  completionText: LocalizedText;
+  ignoredOutcomeText: LocalizedText;
+}
+
+export interface ActiveMajorWorldEvent {
+  id: MajorWorldEventId;
+  stage: MajorWorldEventStage;
+  startedRound: number;
+  roundsRemaining: number;
+  totalDuration: number;
+  interventionProgress: number;
+  requiredProgress: number;
+  intervenedThisRound: boolean;
+  ignoredRoundsCount: number;
+  targetLocationId: string;
+}
+
+export type NpcRole = 'merchant' | 'traveler' | 'quest_giver' | 'special';
+
+export type NpcOptionActionType =
+  | 'goto'
+  | 'close'
+  | 'accept_quest'
+  | 'complete_quest'
+  | 'merchant_bargain'
+  | 'traveler_rumor'
+  | 'special_blessing'
+  | 'special_cleanse'
+  | 'assist_major_event';
+
+export interface NpcQuestSpec {
+  id: string;
+  title: LocalizedText;
+  description: LocalizedText;
+  objectiveType: 'slay_enemies' | 'explore_locations' | 'intervene_event' | 'gather_gold';
+  targetCount: number;
+  rewardGold: number;
+  rewardXp: number;
+  rewardFate: number;
+  rewardCard: boolean;
+}
+
+export interface NpcDialogOption {
+  id: string;
+  label: LocalizedText;
+  action: NpcOptionActionType;
+  nextNodeId?: string;
+  goldCost?: number;
+  requiresQuestAvailable?: boolean;
+  requiresQuestReady?: boolean;
+  requiresActiveMajorEvent?: boolean;
+  requiresCurse?: boolean;
+}
+
+export interface NpcDialogNode {
+  id: string;
+  text: LocalizedText;
+  options: NpcDialogOption[];
+}
+
+export interface NpcDefinition {
+  id: string;
+  role: NpcRole;
+  name: LocalizedText;
+  title: LocalizedText;
+  description: LocalizedText;
+  locationIds: string[];
+  terrains: LocationTerrain[];
+  quest?: NpcQuestSpec;
+  entryNodeId: string;
+  nodes: Record<string, NpcDialogNode>;
+}
+
+export interface NpcDynamicState {
+  npcId: string;
+  timesSpoken: number;
+  questStatus: 'available' | 'active' | 'completed';
+  questBaselineCount: number;
+  questProgress: number;
+  blessingUsedRound?: number;
+  bargainUsedRound?: number;
+}
+
+export interface ActiveNpcDialogState {
+  npcId: string;
+  nodeId: string;
+  dynamicNote?: LocalizedText | null;
 }
 
 export interface GameState {
@@ -493,8 +730,16 @@ export interface GameState {
   round: number;
   activePlayerIndex: number;
   timeOfDay: TimeOfDay;
+  dayNightCycleRound?: number;
+  dayNightPhase?: DayNightCyclePhase;
   weather: WeatherType;
+  weatherDurationRemaining?: number;
+  weatherTotalDuration?: number;
   activeWorldEventId: string | null;
+  activeMajorEvents?: ActiveMajorWorldEvent[];
+  completedMajorEventIds?: MajorWorldEventId[];
+  npcStates?: Record<string, NpcDynamicState>;
+  activeNpcDialog?: ActiveNpcDialogState | null;
   players: PlayerState[];
   deck: string[];
   discardPile: string[];

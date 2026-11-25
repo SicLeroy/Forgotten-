@@ -1,44 +1,20 @@
 import { CARD_MAP } from '../data/cards';
 import { HERO_MAP } from '../data/heroes';
 import { LOCATION_MAP } from '../data/locations';
-import { TIME_CYCLE, WEATHER_LIST, WORLD_EVENTS } from '../data/world';
+import { WORLD_EVENTS } from '../data/world';
 import {
-  ChronicleEntry,
   GameState,
   HERO_INVENTORY_LIMITS,
   HERO_STAT_LIMITS,
-  LocalizedText,
-  TimeOfDay,
-  WeatherType,
 } from '../types/game';
+import { appendChronicleEntry } from './ChronicleHelper';
+import { DayNightManager } from './DayNightManager';
 import { getActivePlayerFromState } from './GameState';
 import { RandomManager } from './RandomManager';
+import { WeatherManager } from './WeatherManager';
+import { MAX_ACTIVE_MAJOR_EVENTS, WorldEventManager } from './WorldEventManager';
 
-const MAX_CHRONICLE_ENTRIES = 80;
-
-let chronicleSeq = 0;
-
-export function appendChronicleEntry(
-  state: GameState,
-  type: ChronicleEntry['type'],
-  playerId: string | null,
-  text: LocalizedText
-): void {
-  const existing = new Set(state.chronicle.map((e) => e.id));
-  let id = `log_${state.round}_${state.rngState}_${++chronicleSeq}`;
-  while (existing.has(id)) {
-    id = `log_${state.round}_${state.rngState}_${++chronicleSeq}`;
-  }
-  const entry: ChronicleEntry = {
-    id,
-    round: state.round,
-    timeOfDay: state.timeOfDay,
-    playerId,
-    type,
-    text,
-  };
-  state.chronicle = [entry, ...state.chronicle].slice(0, MAX_CHRONICLE_ENTRIES);
-}
+export { appendChronicleEntry };
 
 export function drawCardsIntoHand(state: GameState, playerIndex: number, count: number): string[] {
   const player = state.players[playerIndex];
@@ -81,17 +57,25 @@ export function refillMarketStock(state: GameState, targetSize = 4): string[] {
 export const TurnManager = {
   /**
    * Executes Step 1 (Turn Start) and Step 2 (Apply Effects) for the active hero,
-   * applying location time/weather, companion turn bonuses, and active curse drains.
+   * applying DayNightManager, WeatherManager, WorldEventManager, companion bonuses, and curses.
    */
   applyTurnStartAndEffects(state: GameState, isInitialTurn = false): void {
     const player = getActivePlayerFromState(state);
     if (player.isDefeated || state.phase !== 'PLAYING') return;
 
+    DayNightManager.syncState(state);
+
     state.turnCycleStep = 'turn_start';
-    appendChronicleEntry(state, 'system', player.id, {
-      uk: `1. Початок ходу: ${player.name} (Раунд ${state.round}, дій: ${player.actionsRemaining}).`,
-      en: `1. Turn Start: ${player.name} (Round ${state.round}, actions: ${player.actionsRemaining}).`,
-    });
+    appendChronicleEntry(
+      state,
+      'system',
+      player.id,
+      {
+        uk: `1. Початок ходу: ${player.name} (Раунд ${state.round}, дій: ${player.actionsRemaining}).`,
+        en: `1. Turn Start: ${player.name} (Round ${state.round}, actions: ${player.actionsRemaining}).`,
+      },
+      'local'
+    );
 
     state.turnCycleStep = 'apply_effects';
     const loc = LOCATION_MAP.get(player.locationId);
@@ -105,28 +89,33 @@ export const TurnManager = {
     let weatherSummaryEn = '';
 
     if (loc) {
-      const isNightWindow = state.timeOfDay === 'night' || state.timeOfDay === 'dusk';
-      const timeEff = isNightWindow ? loc.nightEffect : loc.dayEffect;
-      const weatherEff = loc.weatherModifiers[state.weather];
-      timeSummaryUk = timeEff.description.uk;
-      timeSummaryEn = timeEff.description.en;
-      weatherSummaryUk = weatherEff.description.uk;
-      weatherSummaryEn = weatherEff.description.en;
+      const timeBonuses = DayNightManager.getHeroTimeBonuses(player, loc, state);
+      const regWeather = WeatherManager.getRegionWeatherEffect(state.weather, loc.regionId);
+      const wProfile = WeatherManager.getProfile(state.weather);
+      timeSummaryUk = timeBonuses.description.uk;
+      timeSummaryEn = timeBonuses.description.en;
+      weatherSummaryUk = `${wProfile.name.uk} (${regWeather.description.uk})`;
+      weatherSummaryEn = `${wProfile.name.en} (${regWeather.description.en})`;
 
       if (
         !isInitialTurn &&
         (loc.terrain === 'sanctuary' || loc.terrain === 'village') &&
-        (state.timeOfDay === 'dawn' || state.timeOfDay === 'day')
+        !DayNightManager.isNight(state)
       ) {
-        const cap = Math.min(HERO_STAT_LIMITS.maxHp, player.maxHp);
-        const before = player.hp;
-        player.hp = Math.min(cap, player.hp + 1);
-        healed += player.hp - before;
+        const worldHealMod = WorldEventManager.getHealingModifier(state);
+        const healGain = Math.max(0, 1 + worldHealMod);
+        if (healGain > 0) {
+          const cap = Math.min(HERO_STAT_LIMITS.maxHp, player.maxHp);
+          const before = player.hp;
+          player.hp = Math.min(cap, player.hp + healGain);
+          healed += player.hp - before;
+        }
       }
     }
 
+    const turnTimeBonusNote = DayNightManager.applyTurnStartTimeBonus(state, player, isInitialTurn);
+
     if (!isInitialTurn) {
-      // Apply active Companion per-turn benefits
       for (const compId of player.companions ?? []) {
         const comp = CARD_MAP.get(compId);
         const cb = comp?.effect.companionBonus;
@@ -143,7 +132,6 @@ export const TurnManager = {
         }
       }
 
-      // Apply active Curse per-turn drains (does not fatally kill at start; leaves min 1 HP unless combat drops HP)
       for (const curseId of player.curses ?? []) {
         const curse = CARD_MAP.get(curseId);
         const cp = curse?.effect.cursePenalty;
@@ -163,6 +151,10 @@ export const TurnManager = {
 
     const extraNotesUk: string[] = [];
     const extraNotesEn: string[] = [];
+    if (turnTimeBonusNote) {
+      extraNotesUk.push(turnTimeBonusNote.uk);
+      extraNotesEn.push(turnTimeBonusNote.en);
+    }
     if (healed > 0) {
       extraNotesUk.push(`відновлено +${healed} HP`);
       extraNotesEn.push(`restored +${healed} HP`);
@@ -180,10 +172,16 @@ export const TurnManager = {
       extraNotesEn.push(`curse eroded -${curseGoldDrain}g`);
     }
 
-    appendChronicleEntry(state, 'world', player.id, {
-      uk: `2. Застосування ефектів${loc ? ` у "${loc.name.uk}"` : ''}: ${timeSummaryUk || 'звичайні умови'}; погода — ${weatherSummaryUk || 'без змін'}${extraNotesUk.length ? `; ${extraNotesUk.join(', ')}` : ''}.`,
-      en: `2. Apply Effects${loc ? ` at "${loc.name.en}"` : ''}: ${timeSummaryEn || 'standard conditions'}; weather — ${weatherSummaryEn || 'steady'}${extraNotesEn.length ? `; ${extraNotesEn.join(', ')}` : ''}.`,
-    });
+    appendChronicleEntry(
+      state,
+      'world',
+      player.id,
+      {
+        uk: `2. Застосування ефектів${loc ? ` у "${loc.name.uk}"` : ''}: ${timeSummaryUk || 'звичайні умови'}; погода — ${weatherSummaryUk || 'без змін'}${extraNotesUk.length ? `; ${extraNotesUk.join(', ')}` : ''}.`,
+        en: `2. Apply Effects${loc ? ` at "${loc.name.en}"` : ''}: ${timeSummaryEn || 'standard conditions'}; weather — ${weatherSummaryEn || 'steady'}${extraNotesEn.length ? `; ${extraNotesEn.join(', ')}` : ''}.`,
+      },
+      'local'
+    );
 
     state.turnCycleStep = 'dice_roll';
     state.turnGuidance = {
@@ -194,11 +192,14 @@ export const TurnManager = {
 
   /**
    * Executes Step 8 (Turn Handoff) to the next living hero.
+   * Completes a full round only after all living active players finish their turns,
+   * then updates DayNightManager, WeatherManager, and WorldEventManager (max 2 active major events).
    */
   advanceTurn(state: GameState): void {
     const prevPlayer = getActivePlayerFromState(state);
     prevPlayer.tempAttackBonus = 0;
     prevPlayer.tempDefenseBonus = 0;
+    state.activeNpcDialog = null;
 
     let nextIndex = state.activePlayerIndex;
     let wrappedRound = false;
@@ -219,12 +220,55 @@ export const TurnManager = {
 
     if (wrappedRound) {
       state.round += 1;
-      const timeIdx = (TIME_CYCLE.indexOf(state.timeOfDay) + 1) % TIME_CYCLE.length;
-      state.timeOfDay = TIME_CYCLE[timeIdx] as TimeOfDay;
+      const dayNightSync = DayNightManager.syncState(state);
+      if (dayNightSync.phaseChangedTo === 'night') {
+        appendChronicleEntry(
+          state,
+          'world',
+          null,
+          {
+            uk: `Настала Ніч (${dayNightSync.info.label.uk}): відкрилися приховані нічні проходи, сили темряви посилилися.`,
+            en: `Nightfall (${dayNightSync.info.label.en}): hidden night passages unlocked and nocturnal perils stir.`,
+          },
+          'global'
+        );
+      } else if (dayNightSync.phaseChangedTo === 'day') {
+        appendChronicleEntry(
+          state,
+          'world',
+          null,
+          {
+            uk: `Настав День (${dayNightSync.info.label.uk}): світло розганяє темряву й відкриває безпечний відпочинок у поселеннях.`,
+            en: `Daybreak (${dayNightSync.info.label.en}): sunlight clears the dark and restores safe shelter in settlements.`,
+          },
+          'global'
+        );
+      }
 
-      const weatherRoll = RandomManager.randomInt(state.rngState, 0, WEATHER_LIST.length - 1);
-      state.rngState = weatherRoll.nextState;
-      state.weather = WEATHER_LIST[weatherRoll.value] as WeatherType;
+      const weatherUpdate = WeatherManager.advanceRoundWeather(state);
+      if (weatherUpdate.changed) {
+        const wp = WeatherManager.getProfile(weatherUpdate.weather);
+        appendChronicleEntry(
+          state,
+          'world',
+          null,
+          {
+            uk: `Зміна погоди (тривалість ${weatherUpdate.durationRemaining} раунд.): "${wp.name.uk}" — ${wp.description.uk}`,
+            en: `Weather Shift (${weatherUpdate.durationRemaining} round(s)): "${wp.name.en}" — ${wp.description.en}`,
+          },
+          'global'
+        );
+        if (weatherUpdate.eventSummary) {
+          appendChronicleEntry(state, 'world', null, weatherUpdate.eventSummary, 'global');
+        }
+      }
+
+      // Advance active major world events and spawn new ones (max 2 simultaneously)
+      WorldEventManager.advanceRoundEvents(state);
+      const currentMajorCount = (state.activeMajorEvents ?? []).length;
+      if (state.round % 2 === 0 && currentMajorCount < MAX_ACTIVE_MAJOR_EVENTS) {
+        WorldEventManager.spawnMajorEvent(state);
+      }
 
       if (state.round % 2 === 0) {
         const evtRoll = RandomManager.randomInt(state.rngState, 0, WORLD_EVENTS.length - 1);
@@ -242,20 +286,32 @@ export const TurnManager = {
           }
         }
 
-        appendChronicleEntry(state, 'world', null, {
-          uk: `Світова подія (Раунд ${state.round}): "${evt.name.uk}" — ${evt.effectSummary.uk}.`,
-          en: `World Event (Round ${state.round}): "${evt.name.en}" — ${evt.effectSummary.en}.`,
-        });
+        appendChronicleEntry(
+          state,
+          'world',
+          null,
+          {
+            uk: `Знамення раунду (Раунд ${state.round}): "${evt.name.uk}" — ${evt.effectSummary.uk}.`,
+            en: `Round Omen (Round ${state.round}): "${evt.name.en}" — ${evt.effectSummary.en}.`,
+          },
+          'global'
+        );
       } else {
         state.activeWorldEventId = null;
       }
     }
 
     state.turnCycleStep = 'turn_handoff';
-    appendChronicleEntry(state, 'system', nextPlayer.id, {
-      uk: `8. Передача ходу: ${prevPlayer.name} передає хід герою ${nextPlayer.name}.`,
-      en: `8. Turn Handoff: ${prevPlayer.name} hands turn over to ${nextPlayer.name}.`,
-    });
+    appendChronicleEntry(
+      state,
+      'system',
+      nextPlayer.id,
+      {
+        uk: `8. Передача ходу: ${prevPlayer.name} передає хід герою ${nextPlayer.name}.`,
+        en: `8. Turn Handoff: ${prevPlayer.name} hands turn over to ${nextPlayer.name}.`,
+      },
+      'local'
+    );
 
     if (state.phase === 'PLAYING') {
       TurnManager.applyTurnStartAndEffects(state);

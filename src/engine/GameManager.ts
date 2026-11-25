@@ -1,5 +1,12 @@
 import { SaveManager } from '../storage/SaveManager';
-import { EngineResult, EquipSlot, GameState, NewGameConfig } from '../types/game';
+import {
+  CombatType,
+  EngineResult,
+  EquipSlot,
+  GameState,
+  MajorWorldEventId,
+  NewGameConfig,
+} from '../types/game';
 import { RulesEngine } from './RulesEngine';
 
 export type GameAction =
@@ -34,10 +41,15 @@ export type GameAction =
   | { type: 'ATTEMPT_TRIAL' }
   | { type: 'CHALLENGE_CITADEL' }
   | { type: 'CHALLENGE_VOID_LORD' }
-  | { type: 'COMBAT_ATTACK' }
+  | { type: 'CHALLENGE_PLAYER'; targetPlayerId: string }
+  | { type: 'COMBAT_ATTACK'; combatType?: CombatType }
   | { type: 'COMBAT_DEFEND' }
   | { type: 'COMBAT_FLEE' }
   | { type: 'RESOLVE_ENCOUNTER' }
+  | { type: 'INTERVENE_WORLD_EVENT'; eventId: MajorWorldEventId }
+  | { type: 'TALK_NPC'; npcId: string }
+  | { type: 'SELECT_NPC_OPTION'; optionId: string }
+  | { type: 'CLOSE_NPC_DIALOG' }
   | { type: 'END_TURN' };
 
 export const GameManager = {
@@ -109,14 +121,24 @@ export const GameManager = {
         return RulesEngine.challengeCitadelGuardian(state);
       case 'CHALLENGE_VOID_LORD':
         return RulesEngine.challengeVoidLord(state);
+      case 'CHALLENGE_PLAYER':
+        return RulesEngine.challengePlayer(state, action.targetPlayerId);
       case 'COMBAT_ATTACK':
-        return RulesEngine.combatAttack(state);
+        return RulesEngine.combatAttack(state, action.combatType ?? 'physical');
       case 'COMBAT_DEFEND':
         return RulesEngine.combatDefend(state);
       case 'COMBAT_FLEE':
         return RulesEngine.combatFlee(state);
       case 'RESOLVE_ENCOUNTER':
         return RulesEngine.resolveEncounter(state);
+      case 'INTERVENE_WORLD_EVENT':
+        return RulesEngine.interveneWorldEvent(state, action.eventId);
+      case 'TALK_NPC':
+        return RulesEngine.talkToNpc(state, action.npcId);
+      case 'SELECT_NPC_OPTION':
+        return RulesEngine.chooseNpcDialogOption(state, action.optionId);
+      case 'CLOSE_NPC_DIALOG':
+        return RulesEngine.closeNpcDialog(state);
       case 'END_TURN':
         return RulesEngine.endTurn(state);
     }

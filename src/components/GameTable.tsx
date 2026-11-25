@@ -1,13 +1,21 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
+  AlertTriangle,
   BookOpen,
+  CheckCircle2,
   CloudFog,
+  CloudLightning,
   CloudRain,
+  CloudSnow,
   Coins,
   Compass,
   Dices,
+  Flame,
+  Globe,
   Heart,
   Lock,
+  MapPin,
+  MessageSquare,
   Moon,
   MoonStar,
   Shield,
@@ -17,29 +25,41 @@ import {
   Sunrise,
   Sunset,
   Sword,
+  Users,
   Wind,
+  X,
   Zap,
 } from 'lucide-react';
 import { CARD_MAP } from '../data/cards';
-import { ENEMY_MAP } from '../data/enemies';
 import { HERO_MAP } from '../data/heroes';
 import { LOCATION_MAP } from '../data/locations';
+import { NPC_MAP } from '../data/npcs';
 import { REGION_MAP } from '../data/regions';
 import { WORLD_EVENT_MAP } from '../data/world';
+import { inferChronicleScope } from '../engine/ChronicleHelper';
+import { DayNightManager } from '../engine/DayNightManager';
 import { NavigationGraph } from '../engine/NavigationGraph';
+import { NpcManager } from '../engine/NpcManager';
 import { getActivePlayer, getPlayerEffectiveStats } from '../engine/RulesEngine';
+import { WeatherManager } from '../engine/WeatherManager';
+import { WorldEventManager } from '../engine/WorldEventManager';
 import { LocalizationManager } from '../i18n/LocalizationManager';
 import {
+  ChronicleScope,
+  CombatType,
   GameState,
   HERO_INVENTORY_LIMITS,
   HERO_STAT_LIMITS,
   Language,
+  MajorWorldEventId,
+  NpcRole,
   SealType,
   TimeOfDay,
   TurnCycleStep,
   WeatherType,
 } from '../types/game';
 import { CardTile, CardTileAction } from './CardTile';
+import { CombatPanel } from './CombatPanel';
 import { DiceDieSvg, DiceRollerPanel } from './DiceRollerPanel';
 import { HeroAvatar } from './HeroAvatar';
 import { OrnamentalDivider, SealSigil } from './OrnamentalSymbols';
@@ -69,16 +89,43 @@ function renderWeatherIcon(weather: WeatherType) {
   switch (weather) {
     case 'clear':
       return <Sun className="h-4 w-4 text-amber-300" aria-hidden="true" />;
-    case 'mist':
-      return <CloudFog className="h-4 w-4 text-stone-300" aria-hidden="true" />;
     case 'rain':
       return <CloudRain className="h-4 w-4 text-sky-400" aria-hidden="true" />;
+    case 'heavy_rain':
+      return <CloudRain className="h-4 w-4 text-blue-400" aria-hidden="true" />;
+    case 'mist':
+      return <CloudFog className="h-4 w-4 text-stone-300" aria-hidden="true" />;
+    case 'magic_fog':
+      return <Sparkles className="h-4 w-4 text-violet-300" aria-hidden="true" />;
+    case 'snow':
+      return <Snowflake className="h-4 w-4 text-sky-200" aria-hidden="true" />;
+    case 'blizzard':
+      return <CloudSnow className="h-4 w-4 text-cyan-300" aria-hidden="true" />;
+    case 'heat':
+      return <Flame className="h-4 w-4 text-orange-400" aria-hidden="true" />;
+    case 'dry_wind':
+      return <Wind className="h-4 w-4 text-amber-400" aria-hidden="true" />;
+    case 'thunderstorm':
+      return <CloudLightning className="h-4 w-4 text-yellow-300" aria-hidden="true" />;
     case 'ash_storm':
-      return <Wind className="h-4 w-4 text-orange-400" aria-hidden="true" />;
+      return <Wind className="h-4 w-4 text-orange-500" aria-hidden="true" />;
     case 'frost_wind':
-      return <Snowflake className="h-4 w-4 text-cyan-300" aria-hidden="true" />;
+      return <Snowflake className="h-4 w-4 text-cyan-200" aria-hidden="true" />;
     case 'void_eclipse':
       return <MoonStar className="h-4 w-4 text-rose-400" aria-hidden="true" />;
+  }
+}
+
+function formatNpcRole(lang: Language, role: NpcRole): string {
+  switch (role) {
+    case 'merchant':
+      return t(lang, 'npcRoleMerchant');
+    case 'traveler':
+      return t(lang, 'npcRoleTraveler');
+    case 'quest_giver':
+      return t(lang, 'npcRoleQuestGiver');
+    case 'special':
+      return t(lang, 'npcRoleSpecial');
   }
 }
 
@@ -113,10 +160,15 @@ interface GameTableProps {
   onAttemptTrial: () => void;
   onChallengeCitadel: () => void;
   onChallengeVoidLord: () => void;
-  onCombatAttack: () => void;
+  onChallengePlayer: (targetPlayerId: string) => void;
+  onCombatAttack: (combatType: CombatType) => void;
   onCombatDefend: () => void;
   onCombatFlee: () => void;
   onResolveEncounter: () => void;
+  onInterveneWorldEvent: (eventId: MajorWorldEventId) => void;
+  onTalkToNpc: (npcId: string) => void;
+  onSelectNpcOption: (optionId: string) => void;
+  onCloseNpcDialog: () => void;
   onEndTurn: () => void;
   onQuickSave: () => void;
 }
@@ -165,13 +217,19 @@ export const GameTable: React.FC<GameTableProps> = ({
   onAttemptTrial,
   onChallengeCitadel,
   onChallengeVoidLord,
+  onChallengePlayer,
   onCombatAttack,
   onCombatDefend,
   onCombatFlee,
   onResolveEncounter,
+  onInterveneWorldEvent,
+  onTalkToNpc,
+  onSelectNpcOption,
+  onCloseNpcDialog,
   onEndTurn,
   onQuickSave,
 }) => {
+  const [chronicleFilter, setChronicleFilter] = useState<'all' | ChronicleScope>('all');
   const activePlayer = getActivePlayer(state);
   const hero = HERO_MAP.get(activePlayer.heroId)!;
   const effStats = getPlayerEffectiveStats(activePlayer);
@@ -180,13 +238,9 @@ export const GameTable: React.FC<GameTableProps> = ({
   const worldEvent = state.activeWorldEventId
     ? WORLD_EVENT_MAP.get(state.activeWorldEventId)
     : null;
-  const activeEnemy = state.combat ? ENEMY_MAP.get(state.combat.enemyId) : null;
-  const combatEnemyCard = state.combat?.enemyCardId ? CARD_MAP.get(state.combat.enemyCardId) : null;
-  const combatEnemyName = state.combat?.enemyNameOverride ?? activeEnemy?.name ?? null;
-  const combatEnemyTrait = state.combat?.enemyTraitOverride ?? activeEnemy?.specialTrait ?? null;
-  const combatEnemyDesc = combatEnemyCard?.description ?? activeEnemy?.description ?? null;
-  const combatEnemyAttack = state.combat?.enemyAttackOverride ?? activeEnemy?.attack ?? 0;
-  const combatEnemyDefense = state.combat?.enemyDefenseOverride ?? activeEnemy?.defense ?? 0;
+  const pvpRivalsHere = state.players.filter(
+    (p) => !p.isDefeated && p.id !== activePlayer.id && p.locationId === activePlayer.locationId
+  );
   const companions = activePlayer.companions ?? [];
   const curses = activePlayer.curses ?? [];
   const marketCards = (state.marketCardIds ?? [])
@@ -201,7 +255,7 @@ export const GameTable: React.FC<GameTableProps> = ({
       currentLocation.terrain === 'sanctuary' ||
       currentLocation.terrain === 'shrine');
 
-  const neighborStatuses = NavigationGraph.getNeighborStatuses(activePlayer, currentLocation.id);
+  const neighborStatuses = NavigationGraph.getNeighborStatuses(activePlayer, currentLocation.id, state);
 
   const canChallengeGateGuardian =
     state.turnPhase === 'ACTION' &&
@@ -254,9 +308,35 @@ export const GameTable: React.FC<GameTableProps> = ({
   );
   const canStopMovementEarly = Boolean(hero.canTriggerMidwayEvents || isObjectiveNode);
 
-  const isNightWindow = state.timeOfDay === 'night' || state.timeOfDay === 'dusk';
-  const activeTimeEffect = isNightWindow ? currentLocation.nightEffect : currentLocation.dayEffect;
+  const dayNightInfo = DayNightManager.getCycleInfo(state.round);
+  const isNightWindow = DayNightManager.isNight(state);
+  const heroTimeBonuses = DayNightManager.getHeroTimeBonuses(activePlayer, currentLocation, state);
+  const regionWeatherEffect = WeatherManager.getRegionWeatherEffect(state.weather, currentLocation.regionId);
+  const weatherProfile = WeatherManager.getProfile(state.weather);
+  const weatherRemaining = state.weatherDurationRemaining ?? 1;
   const activeWeatherEffect = currentLocation.weatherModifiers[state.weather];
+
+  const activeMajorEvents = WorldEventManager.getActiveEvents(state);
+  const marketPriceModifier = WorldEventManager.getMarketPriceModifier(state);
+  const supplyCost = Math.max(4, 15 + marketPriceModifier);
+  const healingModifier = WorldEventManager.getHealingModifier(state);
+  const sanctuaryHealGain = Math.max(1, 4 + healingModifier);
+
+  const npcsHere = NpcManager.getNpcsAtLocation(currentLocation.id);
+  const activeDialog = state.activeNpcDialog ?? null;
+  const activeDialogNpc = activeDialog ? NPC_MAP.get(activeDialog.npcId) ?? null : null;
+  const activeDialogNode =
+    activeDialog && activeDialogNpc ? activeDialogNpc.nodes[activeDialog.nodeId] ?? null : null;
+  const activeDialogOptions =
+    activeDialog && activeDialogNpc && !activePlayer.isAI
+      ? NpcManager.getAvailableOptions(state, activePlayer, activeDialogNpc, activeDialog.nodeId)
+      : [];
+
+  const filteredChronicle = state.chronicle.filter((entry) => {
+    if (chronicleFilter === 'all') return true;
+    const scope = entry.scope ?? inferChronicleScope(entry.type, entry.playerId);
+    return scope === chronicleFilter;
+  });
 
   const hpPct =
     activePlayer.maxHp > 0
@@ -265,55 +345,113 @@ export const GameTable: React.FC<GameTableProps> = ({
 
   return (
     <main className="mx-auto max-w-[1440px] px-4 py-5 sm:px-6">
-      {/* Workspace World Toolbar with Day/Night & Weather Indicator */}
-      <div className="mb-5 flex flex-wrap items-center justify-between gap-4 rounded-lg ornate-frame bg-[#15181f] px-4 py-3 text-xs text-stone-300">
-        <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1.5 tabular-nums">
-          <span className="font-semibold text-stone-100">
-            {t(lang, 'roundLabel')} {state.round}
-          </span>
-          <span aria-hidden="true" className="text-stone-600">·</span>
-          <span className="inline-flex items-center gap-1.5 font-medium text-stone-100">
-            {renderTimeIcon(state.timeOfDay)}
-            {formatTimeOfDay(lang, state.timeOfDay)}
-          </span>
-          <span aria-hidden="true" className="text-stone-600">·</span>
-          <span className="inline-flex items-center gap-1.5 font-medium text-stone-100">
-            {renderWeatherIcon(state.weather)}
-            {formatWeather(lang, state.weather)}
-          </span>
-          <span aria-hidden="true" className="text-stone-600">·</span>
-          <span>
-            {t(lang, 'deckRemaining')}: {state.deck.length}/{state.discardPile.length}
-          </span>
-          <span aria-hidden="true" className="text-stone-600">·</span>
-          <span>
-            {t(lang, 'adventureDeckLabel')}: {state.adventureDeck?.length ?? 0}/
-            {state.adventureDiscardPile?.length ?? 0}
-          </span>
-          {state.lastDiceRoll !== null && (
-            <>
-              <span aria-hidden="true" className="text-stone-600">·</span>
-              <span className="font-mono font-semibold text-amber-300">
-                {t(lang, 'lastRoll')}: {state.lastDiceRoll}
+      {/* Workspace World Toolbar with 6-Round Day/Night & Regional Weather Indicators */}
+      <div className="mb-5 rounded-lg ornate-frame bg-[#15181f] px-4 py-3 text-xs text-stone-300 space-y-2.5">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1.5 tabular-nums">
+            <span className="font-semibold text-stone-100">
+              {t(lang, 'roundLabel')} {state.round}
+            </span>
+            <span aria-hidden="true" className="text-stone-600">·</span>
+            <span className="inline-flex items-center gap-1.5 font-medium text-stone-100">
+              {renderTimeIcon(state.timeOfDay)}
+              {pickText(lang, dayNightInfo.label)}
+            </span>
+            <span
+              className="inline-flex items-center gap-1"
+              title={`${t(lang, 'dayNightCycleTitle')} · ${t(lang, 'dayCycleLabel')} / ${t(lang, 'nightCycleLabel')}`}
+              aria-label={t(lang, 'dayNightCycleTitle')}
+            >
+              {[1, 2, 3, 4, 5, 6].map((slot) => {
+                const isActiveSlot = slot === dayNightInfo.cycleRound;
+                const isDaySlot = slot <= 3;
+                return (
+                  <span
+                    key={slot}
+                    className={`inline-flex h-4 w-4 items-center justify-center rounded-sm border font-mono text-[10px] font-semibold ${
+                      isActiveSlot
+                        ? isDaySlot
+                          ? 'border-amber-400 bg-amber-500 text-stone-950'
+                          : 'border-sky-400 bg-sky-500 text-stone-950'
+                        : isDaySlot
+                          ? 'border-amber-900/50 bg-[#1a1813] text-amber-400/70'
+                          : 'border-sky-900/50 bg-[#111622] text-sky-400/70'
+                    }`}
+                  >
+                    {slot}
+                  </span>
+                );
+              })}
+            </span>
+            <span aria-hidden="true" className="text-stone-600">·</span>
+            <span className="inline-flex items-center gap-1.5 font-medium text-stone-100">
+              {renderWeatherIcon(state.weather)}
+              <span>{formatWeather(lang, state.weather)}</span>
+              <span className="font-mono text-stone-400">
+                ({weatherRemaining} {t(lang, 'weatherDurationLabel').toLowerCase()})
               </span>
-            </>
-          )}
+            </span>
+            <span aria-hidden="true" className="text-stone-600">·</span>
+            <span>
+              {t(lang, 'deckRemaining')}: {state.deck.length}/{state.discardPile.length}
+            </span>
+            <span aria-hidden="true" className="text-stone-600">·</span>
+            <span>
+              {t(lang, 'adventureDeckLabel')}: {state.adventureDeck?.length ?? 0}/
+              {state.adventureDiscardPile?.length ?? 0}
+            </span>
+            {state.lastDiceRoll !== null && (
+              <>
+                <span aria-hidden="true" className="text-stone-600">·</span>
+                <span className="font-mono font-semibold text-amber-300">
+                  {t(lang, 'lastRoll')}: {state.lastDiceRoll}
+                </span>
+              </>
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            {activeMajorEvents.length > 0 ? (
+              <span className="inline-flex items-center gap-1.5 text-rose-300 font-medium">
+                <AlertTriangle className="h-3.5 w-3.5 text-amber-400 shrink-0" aria-hidden="true" />
+                {activeMajorEvents
+                  .map((evt) => {
+                    const def = WorldEventManager.getDefinition(evt.id);
+                    return `${pickText(lang, def.name)} (${t(lang, 'stageLabel')} ${evt.stage}/3)`;
+                  })
+                  .join(' · ')}
+              </span>
+            ) : worldEvent ? (
+              <span className="text-amber-300/90">
+                {t(lang, 'activeEventLabel')}: {pickText(lang, worldEvent.name)} (
+                {pickText(lang, worldEvent.effectSummary)})
+              </span>
+            ) : (
+              <span className="text-stone-400">{t(lang, 'noActiveEvent')}</span>
+            )}
+            <button
+              type="button"
+              onClick={onQuickSave}
+              className="rounded border border-stone-700 bg-stone-900 px-3.5 py-2 text-xs font-semibold text-stone-200 hover:border-amber-500/60 hover:text-amber-300 transition-colors whitespace-nowrap shrink-0 min-h-[38px]"
+            >
+              {t(lang, 'saveNow')}
+            </button>
+          </div>
         </div>
 
-        <div className="flex items-center gap-3">
-          {worldEvent && (
-            <span className="text-amber-300/90">
-              {t(lang, 'activeEventLabel')}: {pickText(lang, worldEvent.name)} (
-              {pickText(lang, worldEvent.effectSummary)})
-            </span>
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-stone-800/80 pt-2 text-[11px] text-stone-400">
+          <div>
+            <span className="font-semibold text-stone-200">{t(lang, 'regionalWeatherLabel')}: </span>
+            <span>{pickText(lang, regionWeatherEffect.description)}</span>
+            {weatherProfile.blocksMountainPass && (
+              <span className="ml-2 text-rose-300 font-medium">
+                · {pickText(lang, weatherProfile.description)}
+              </span>
+            )}
+          </div>
+          {isNightWindow && (
+            <span className="text-sky-300 font-medium">{t(lang, 'nightPassageOpenLabel')}</span>
           )}
-          <button
-            type="button"
-            onClick={onQuickSave}
-            className="rounded border border-stone-700 bg-stone-900 px-3.5 py-2 text-xs font-semibold text-stone-200 hover:border-amber-500/60 hover:text-amber-300 transition-colors whitespace-nowrap shrink-0 min-h-[38px]"
-          >
-            {t(lang, 'saveNow')}
-          </button>
         </div>
       </div>
 
@@ -733,7 +871,7 @@ export const GameTable: React.FC<GameTableProps> = ({
                   <span className="font-semibold text-stone-200">
                     {isNightWindow ? t(lang, 'nightEffectLabel') : t(lang, 'dayEffectLabel')}:{' '}
                   </span>
-                  <span>{pickText(lang, activeTimeEffect.description)}</span>
+                  <span>{pickText(lang, heroTimeBonuses.description)}</span>
                 </div>
                 <div>
                   <span className="font-semibold text-stone-200">
@@ -744,6 +882,128 @@ export const GameTable: React.FC<GameTableProps> = ({
               </div>
             </div>
           </div>
+
+          {/* Major World Events Panel (max 2 simultaneous crises) */}
+          <section className="rounded-lg border border-stone-800 bg-[#151820] p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-stone-800 pb-2.5">
+              <h2 className="inline-flex items-center gap-2 font-display text-lg font-bold text-amber-200">
+                <Globe className="h-4 w-4 text-amber-400" aria-hidden="true" />
+                {t(lang, 'majorWorldEventsTitle')}
+              </h2>
+              <span className="font-mono text-xs text-stone-400 tabular-nums">
+                {activeMajorEvents.length} / {WorldEventManager.MAX_ACTIVE_MAJOR_EVENTS}
+              </span>
+            </div>
+
+            {activeMajorEvents.length === 0 ? (
+              <p className="text-xs text-stone-400">{t(lang, 'noMajorEventsYet')}</p>
+            ) : (
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                {activeMajorEvents.map((evt) => {
+                  const def = WorldEventManager.getDefinition(evt.id);
+                  const stageSpec = WorldEventManager.getCurrentStageSpec(evt);
+                  const targetLoc = LOCATION_MAP.get(evt.targetLocationId);
+                  const progressPct =
+                    evt.requiredProgress > 0
+                      ? Math.max(0, Math.min(100, Math.round((evt.interventionProgress / evt.requiredProgress) * 100)))
+                      : 0;
+                  const interveneCheck = WorldEventManager.canHeroIntervene(state, activePlayer, evt.id);
+
+                  return (
+                    <div
+                      key={evt.id}
+                      className="rounded-md border border-rose-900/50 bg-[#12141b] p-3.5 text-xs space-y-2.5 flex flex-col justify-between"
+                    >
+                      <div className="space-y-2">
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <div className="font-display text-base font-bold text-rose-200 leading-snug">
+                              {pickText(lang, def.name)}
+                            </div>
+                            <div className="text-[11px] font-semibold text-amber-300/90">
+                              {t(lang, 'stageLabel')} {evt.stage}/3 · {pickText(lang, stageSpec.title)}
+                            </div>
+                          </div>
+                          <span className="font-mono text-[11px] text-stone-300 shrink-0 tabular-nums">
+                            {evt.roundsRemaining} {t(lang, 'weatherDurationLabel').toLowerCase()}
+                          </span>
+                        </div>
+
+                        <p className="text-stone-300 leading-relaxed">{pickText(lang, def.description)}</p>
+
+                        <div className="rounded border border-stone-800/80 bg-[#0f1117] p-2 space-y-1 text-[11px]">
+                          <div>
+                            <span className="font-semibold text-rose-300">{t(lang, 'consequencesLabel')}: </span>
+                            <span className="text-stone-300">{pickText(lang, stageSpec.consequenceSummary)}</span>
+                          </div>
+                          <div>
+                            <span className="font-semibold text-amber-300">{t(lang, 'worldImpactsLabel')}: </span>
+                            <span className="text-stone-400">
+                              {pickText(lang, def.dayNightImpact)} · {pickText(lang, def.locationImpact)} · {pickText(lang, def.cardImpact)}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="font-semibold text-emerald-300">{t(lang, 'questProgressLabel')}: </span>
+                            <span className="text-stone-300">
+                              {pickText(lang, def.questTitle)} — {pickText(lang, def.questDescription)}
+                            </span>
+                          </div>
+                          {targetLoc && (
+                            <div className="text-sky-300">
+                              {targetLoc.index}. {pickText(lang, targetLoc.name)} ({def.interventionTerrains.join(', ')})
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="space-y-2 pt-1">
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between font-mono text-[11px] text-stone-300 tabular-nums">
+                            <span>{t(lang, 'interventionProgressLabel')}</span>
+                            <span>
+                              {evt.interventionProgress} / {evt.requiredProgress}
+                            </span>
+                          </div>
+                          <div className="h-1.5 w-full overflow-hidden rounded-sm bg-stone-900">
+                            <div
+                              className="h-full bg-amber-500 transition-transform duration-200 origin-left"
+                              style={{ transform: `scaleX(${progressPct / 100})` }}
+                            />
+                          </div>
+                        </div>
+
+                        <div className="text-[11px] text-stone-400 tabular-nums">
+                          <span className="font-semibold text-stone-200">{t(lang, 'eventRewardsLabel')}: </span>
+                          +{def.rewards.gold}g · +{def.rewards.xp} XP · +{def.rewards.hp} HP · +{def.rewards.fate} Fate
+                          {def.rewards.drawCards > 0 ? ` · +${def.rewards.drawCards} card(s)` : ''}
+                        </div>
+
+                        {!activePlayer.isAI && (
+                          <div className="space-y-1">
+                            <button
+                              type="button"
+                              disabled={!interveneCheck.allowed}
+                              onClick={() => onInterveneWorldEvent(evt.id)}
+                              title={interveneCheck.reason ? pickText(lang, interveneCheck.reason) : undefined}
+                              className="w-full rounded bg-amber-600 px-3 py-2 text-xs font-bold text-stone-950 hover:bg-amber-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors min-h-[38px]"
+                            >
+                              {t(lang, 'interveneAction')} ({def.interventionActionCost} {t(lang, 'actionsLabel').toLowerCase()}
+                              {def.interventionGoldCost > 0 ? ` · ${def.interventionGoldCost}g` : ''})
+                            </button>
+                            {!interveneCheck.allowed && interveneCheck.reason && (
+                              <p className="text-[11px] text-stone-400 leading-snug">
+                                {pickText(lang, interveneCheck.reason)}
+                              </p>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
 
           {/* Dice Roller & Roll History Panel */}
           <DiceRollerPanel
@@ -758,68 +1018,14 @@ export const GameTable: React.FC<GameTableProps> = ({
             <section className="rounded-lg border border-stone-800 bg-[#171b22] p-6 text-center">
               <p className="font-display text-xl text-amber-300">{t(lang, 'aiThinking')}</p>
             </section>
-          ) : state.turnPhase === 'COMBAT' && state.combat && activeEnemy && combatEnemyName && combatEnemyTrait && combatEnemyDesc ? (
-            <section className="rounded-lg border border-rose-800/70 bg-[#1a161b] p-5 space-y-4">
-              <div className="flex flex-wrap items-start justify-between gap-4 border-b border-stone-800 pb-3">
-                <div>
-                  <p className="text-xs font-semibold text-rose-400">
-                    {t(lang, 'roundLabel')} {state.combat.roundCount} ·{' '}
-                    {pickText(lang, combatEnemyTrait)}
-                  </p>
-                  <h2 className="font-display text-2xl font-bold text-stone-100">
-                    {pickText(lang, combatEnemyName)}
-                  </h2>
-                  <p className="text-xs text-stone-400 mt-0.5">
-                    {pickText(lang, combatEnemyDesc)}
-                  </p>
-                </div>
-                <div className="text-right font-mono tabular-nums text-xs">
-                  <div className="text-lg font-bold text-rose-300">
-                    HP {state.combat.enemyCurrentHp} / {state.combat.enemyMaxHp}
-                  </div>
-                  <div className="text-stone-400">
-                    ATK {combatEnemyAttack} · DEF {combatEnemyDefense}
-                  </div>
-                </div>
-              </div>
-
-              {(state.combat.lastPlayerRoll !== null || state.combat.lastEnemyRoll !== null) && (
-                <div className="flex flex-wrap gap-4 text-xs font-mono tabular-nums text-stone-300">
-                  {state.combat.lastPlayerRoll !== null && (
-                    <span>Hero d6: {state.combat.lastPlayerRoll}</span>
-                  )}
-                  {state.combat.lastEnemyRoll !== null && (
-                    <span>Enemy d6: {state.combat.lastEnemyRoll}</span>
-                  )}
-                </div>
-              )}
-
-              <div className="flex flex-wrap gap-3">
-                <button
-                  type="button"
-                  onClick={onCombatAttack}
-                  className="rounded bg-rose-700 px-5 py-2.5 text-sm font-bold text-white hover:bg-rose-600 transition-colors min-h-[44px]"
-                >
-                  {t(lang, 'attackAction')}
-                </button>
-                <button
-                  type="button"
-                  onClick={onCombatDefend}
-                  className="rounded border border-stone-700 bg-stone-900 px-5 py-2.5 text-sm font-semibold text-stone-100 hover:border-stone-500 transition-colors min-h-[44px]"
-                >
-                  {t(lang, 'defendAction')}
-                </button>
-                {state.combat.combatPurpose !== 'void_lord' && (
-                  <button
-                    type="button"
-                    onClick={onCombatFlee}
-                    className="rounded border border-stone-700 bg-stone-900 px-5 py-2.5 text-sm font-semibold text-stone-300 hover:border-amber-500/60 transition-colors min-h-[44px]"
-                  >
-                    {t(lang, 'fleeAction')}
-                  </button>
-                )}
-              </div>
-            </section>
+          ) : state.turnPhase === 'COMBAT' && state.combat ? (
+            <CombatPanel
+              lang={lang}
+              state={state}
+              onCombatAttack={onCombatAttack}
+              onCombatDefend={onCombatDefend}
+              onCombatFlee={onCombatFlee}
+            />
           ) : state.turnPhase === 'ENCOUNTER' && state.encounter ? (
             <section className="rounded-lg border border-amber-700/60 bg-[#171b22] p-5 space-y-4">
               <div>
@@ -917,7 +1123,7 @@ export const GameTable: React.FC<GameTableProps> = ({
               </div>
 
               <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-                {neighborStatuses.map(({ location: neighbor, allowed, reason }) => (
+                {neighborStatuses.map(({ location: neighbor, allowed, reason, isNightPassage, passageLabel }) => (
                   <button
                     key={neighbor.id}
                     type="button"
@@ -925,26 +1131,34 @@ export const GameTable: React.FC<GameTableProps> = ({
                     onClick={() => onStepMove(neighbor.id)}
                     title={!allowed && reason ? pickText(lang, reason) : undefined}
                     className={`flex items-center justify-between gap-2 rounded border px-3.5 py-2.5 text-left text-xs transition-colors min-h-[44px] ${
-                      allowed
-                        ? 'border-emerald-700/70 bg-[#121917] hover:border-amber-500/80 text-stone-100'
-                        : 'border-rose-900/60 bg-[#191215] text-stone-500 cursor-not-allowed opacity-75'
+                      !allowed
+                        ? 'border-rose-900/60 bg-[#191215] text-stone-500 cursor-not-allowed opacity-75'
+                        : isNightPassage
+                          ? 'border-sky-600/70 bg-[#121926] hover:border-sky-400 text-sky-100'
+                          : 'border-emerald-700/70 bg-[#121917] hover:border-amber-500/80 text-stone-100'
                     }`}
                   >
                     <div className="min-w-0">
                       <div className="font-semibold truncate">
                         {neighbor.index}. {pickText(lang, neighbor.name)}
                       </div>
-                      <div className="text-[11px] text-stone-400 truncate">
-                        {allowed
-                          ? pickText(lang, neighbor.sectorName)
-                          : reason
+                      <div className={`text-[11px] truncate ${isNightPassage ? 'text-sky-300' : 'text-stone-400'}`}>
+                        {!allowed
+                          ? reason
                             ? pickText(lang, reason)
-                            : t(lang, 'lockedRoute')}
+                            : t(lang, 'lockedRoute')
+                          : isNightPassage
+                            ? passageLabel
+                              ? pickText(lang, passageLabel)
+                              : t(lang, 'nightPassageOpenLabel')
+                            : pickText(lang, neighbor.sectorName)}
                       </div>
                     </div>
                     <span className="font-mono tabular-nums shrink-0 inline-flex items-center gap-1">
                       {!allowed ? (
                         <Lock className="h-3.5 w-3.5 text-rose-400" aria-hidden="true" />
+                      ) : isNightPassage ? (
+                        <Moon className="h-3.5 w-3.5 text-sky-300" aria-hidden="true" />
                       ) : neighbor.sealReward ? (
                         '★'
                       ) : neighbor.isGateGuardianLair ||
@@ -1000,11 +1214,13 @@ export const GameTable: React.FC<GameTableProps> = ({
                 {canBuySupply && (
                   <button
                     type="button"
-                    disabled={activePlayer.gold < 15 || activePlayer.hand.length >= 7}
+                    disabled={activePlayer.gold < supplyCost || activePlayer.hand.length >= 7}
                     onClick={onBuySupply}
                     className="rounded border border-stone-700 bg-stone-900 px-4 py-2.5 text-xs font-semibold text-amber-200 hover:border-amber-500/60 disabled:opacity-40 disabled:cursor-not-allowed transition-colors min-h-[44px]"
                   >
-                    {t(lang, 'buyGearAction')}
+                    {marketPriceModifier === 0
+                      ? t(lang, 'buyGearAction')
+                      : `${t(lang, 'buyGearAction')} → ${supplyCost}g`}
                   </button>
                 )}
                 {canChallengeGateGuardian && (
@@ -1063,13 +1279,40 @@ export const GameTable: React.FC<GameTableProps> = ({
                 </button>
               </div>
 
+              {/* PvP Challenge when rival heroes occupy the same location */}
+              {pvpRivalsHere.length > 0 && (
+                <div className="border-t border-stone-800 pt-3.5 space-y-2">
+                  <h3 className="text-xs font-semibold text-rose-300">
+                    {t(lang, 'pvpSectionTitle')}
+                  </h3>
+                  <div className="flex flex-wrap gap-2">
+                    {pvpRivalsHere.map((rival) => {
+                      const rHero = HERO_MAP.get(rival.heroId);
+                      return (
+                        <button
+                          key={rival.id}
+                          type="button"
+                          disabled={activePlayer.actionsRemaining <= 0}
+                          onClick={() => onChallengePlayer(rival.id)}
+                          className="inline-flex items-center gap-2 rounded border border-rose-700/70 bg-rose-950/40 px-3.5 py-2 text-xs font-semibold text-rose-200 hover:border-rose-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors min-h-[40px]"
+                        >
+                          <Sword className="h-3.5 w-3.5" aria-hidden="true" />
+                          {t(lang, 'pvpChallengeAction')}: {rival.name}
+                          {rHero ? ` (${pickText(lang, rHero.name)})` : ''}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
               {/* Connected Neighbors Movement */}
               <div className="border-t border-stone-800 pt-4">
                 <h3 className="text-xs font-semibold text-stone-400 mb-2.5">
                   {t(lang, 'connectedLocations')} ({neighborStatuses.length})
                 </h3>
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  {neighborStatuses.map(({ location: neighbor, allowed, reason }) => (
+                  {neighborStatuses.map(({ location: neighbor, allowed, reason, isNightPassage, passageLabel }) => (
                     <button
                       key={neighbor.id}
                       type="button"
@@ -1077,24 +1320,32 @@ export const GameTable: React.FC<GameTableProps> = ({
                       onClick={() => onMove(neighbor.id)}
                       title={!allowed && reason ? pickText(lang, reason) : undefined}
                       className={`flex items-center justify-between gap-2 rounded border px-3.5 py-2.5 text-left text-xs transition-colors min-h-[44px] ${
-                        allowed
-                          ? 'border-stone-800 bg-[#12151b] hover:border-amber-500/60 disabled:opacity-45 disabled:cursor-not-allowed'
-                          : 'border-rose-900/60 bg-[#181215] text-stone-500 opacity-75 cursor-not-allowed'
+                        !allowed
+                          ? 'border-rose-900/60 bg-[#181215] text-stone-500 opacity-75 cursor-not-allowed'
+                          : isNightPassage
+                            ? 'border-sky-700/70 bg-[#121824] hover:border-sky-400 disabled:opacity-45 disabled:cursor-not-allowed'
+                            : 'border-stone-800 bg-[#12151b] hover:border-amber-500/60 disabled:opacity-45 disabled:cursor-not-allowed'
                       }`}
                     >
                       <div className="min-w-0">
                         <div className="font-medium text-stone-200 truncate">
                           {neighbor.index}. {pickText(lang, neighbor.name)}
                         </div>
-                        {!allowed && reason && (
+                        {!allowed && reason ? (
                           <div className="text-[11px] text-rose-300/90 truncate">
                             {pickText(lang, reason)}
                           </div>
-                        )}
+                        ) : isNightPassage ? (
+                          <div className="text-[11px] text-sky-300 truncate">
+                            {passageLabel ? pickText(lang, passageLabel) : t(lang, 'nightPassageOpenLabel')}
+                          </div>
+                        ) : null}
                       </div>
                       <span className="font-mono tabular-nums text-stone-400 shrink-0">
                         {!allowed ? (
                           <Lock className="h-3.5 w-3.5 text-rose-400" aria-hidden="true" />
+                        ) : isNightPassage ? (
+                          <Moon className="h-3.5 w-3.5 text-sky-300" aria-hidden="true" />
                         ) : neighbor.sealReward ? (
                           '★'
                         ) : neighbor.isGateGuardianLair ||
@@ -1113,13 +1364,161 @@ export const GameTable: React.FC<GameTableProps> = ({
             </section>
           )}
 
+          {/* NPCs at Current Location & Interactive Branching Dialogue */}
+          {!activePlayer.isAI && state.turnPhase === 'ACTION' && npcsHere.length > 0 && (
+            <section className="rounded-lg border border-stone-800 bg-[#171b22] p-5 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-stone-800 pb-3">
+                <h3 className="inline-flex items-center gap-2 font-display text-xl font-bold text-stone-100">
+                  <Users className="h-5 w-5 text-amber-400" aria-hidden="true" />
+                  {t(lang, 'npcsHereTitle')}
+                </h3>
+                <span className="font-mono text-xs text-stone-400 tabular-nums">
+                  {npcsHere.length}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {npcsHere.map((npc) => {
+                  const dyn = state.npcStates?.[npc.id];
+                  const isTalkingToThis = activeDialog?.npcId === npc.id;
+                  const questStatus = dyn?.questStatus ?? 'available';
+                  const questProgress = dyn?.questProgress ?? 0;
+                  return (
+                    <div
+                      key={npc.id}
+                      className={`rounded-md border p-3.5 text-xs space-y-2 transition-colors ${
+                        isTalkingToThis
+                          ? 'border-amber-500/80 bg-[#1b1f29]'
+                          : 'border-stone-800 bg-[#12151b]'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="text-[11px] font-semibold uppercase tracking-wider text-amber-300/90">
+                            {formatNpcRole(lang, npc.role)}
+                          </div>
+                          <div className="font-display text-base font-bold text-stone-100 truncate">
+                            {pickText(lang, npc.name)}
+                          </div>
+                          <div className="text-[11px] text-stone-400 truncate">
+                            {pickText(lang, npc.title)}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => onTalkToNpc(npc.id)}
+                          className="inline-flex items-center gap-1.5 rounded border border-amber-500/70 bg-amber-950/40 px-3 py-1.5 text-xs font-semibold text-amber-200 hover:bg-amber-900/50 transition-colors shrink-0 min-h-[36px]"
+                        >
+                          <MessageSquare className="h-3.5 w-3.5" aria-hidden="true" />
+                          {t(lang, 'talkAction')}
+                        </button>
+                      </div>
+
+                      <p className="text-stone-300 leading-relaxed">{pickText(lang, npc.description)}</p>
+
+                      {npc.quest && (
+                        <div className="rounded border border-stone-800/80 bg-[#0f1217] px-2.5 py-1.5 text-[11px] flex items-center justify-between gap-2">
+                          <span className="text-stone-300 truncate">
+                            {t(lang, 'questProgressLabel')}: {pickText(lang, npc.quest.title)}
+                          </span>
+                          {questStatus === 'completed' ? (
+                            <span className="inline-flex items-center gap-1 text-emerald-300 font-semibold shrink-0">
+                              <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
+                              {t(lang, 'questCompletedLabel')}
+                            </span>
+                          ) : questStatus === 'active' ? (
+                            <span className="font-mono text-amber-300 shrink-0 tabular-nums">
+                              {questProgress}/{npc.quest.targetCount}
+                            </span>
+                          ) : (
+                            <span className="font-mono text-stone-400 shrink-0 tabular-nums">
+                              0/{npc.quest.targetCount}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {activeDialog && activeDialogNpc && activeDialogNode && (
+                <div className="rounded-lg border border-amber-500/70 bg-[#10141c] p-4 space-y-3 shadow-lg">
+                  <div className="flex items-start justify-between gap-3 border-b border-stone-800 pb-2.5">
+                    <div>
+                      <div className="text-[11px] font-semibold uppercase tracking-wider text-amber-300">
+                        {formatNpcRole(lang, activeDialogNpc.role)} · {pickText(lang, activeDialogNpc.title)}
+                      </div>
+                      <h4 className="font-display text-lg font-bold text-stone-100">
+                        {pickText(lang, activeDialogNpc.name)}
+                      </h4>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={onCloseNpcDialog}
+                      aria-label={t(lang, 'closeDialogAction')}
+                      className="inline-flex items-center gap-1 rounded border border-stone-700 bg-stone-900 px-2.5 py-1.5 text-xs font-medium text-stone-300 hover:border-stone-500 min-h-[34px]"
+                    >
+                      <X className="h-3.5 w-3.5" aria-hidden="true" />
+                      {t(lang, 'closeDialogAction')}
+                    </button>
+                  </div>
+
+                  {activeDialog.dynamicNote && (
+                    <div className="rounded border border-sky-700/50 bg-sky-950/35 px-3 py-2 text-xs text-sky-200 leading-relaxed">
+                      {pickText(lang, activeDialog.dynamicNote)}
+                    </div>
+                  )}
+
+                  <p className="text-sm text-stone-200 leading-relaxed">
+                    {pickText(lang, activeDialogNode.text)}
+                  </p>
+
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    {activeDialogOptions.map((opt) => {
+                      const cantAfford = Boolean(opt.goldCost && activePlayer.gold < opt.goldCost);
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          disabled={cantAfford}
+                          onClick={() => onSelectNpcOption(opt.id)}
+                          className={`rounded border px-3.5 py-2 text-xs font-semibold transition-colors min-h-[38px] disabled:opacity-40 disabled:cursor-not-allowed ${
+                            opt.action === 'close'
+                              ? 'border-stone-700 bg-stone-900 text-stone-300 hover:border-stone-500'
+                              : 'border-amber-600/70 bg-amber-950/45 text-amber-200 hover:bg-amber-900/55'
+                          }`}
+                        >
+                          {pickText(lang, opt.label)}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </section>
+          )}
+
           {/* Settlement Trade, Healing & Curse Purification */}
           {!activePlayer.isAI && isAtCleanseSite && (
             <section className="rounded-lg border border-stone-800 bg-[#171b22] p-5 space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-3 border-b border-stone-800 pb-3">
-                <h3 className="font-display text-xl font-bold text-stone-100">
-                  {t(lang, 'marketTitle')}
-                </h3>
+                <div>
+                  <h3 className="font-display text-xl font-bold text-stone-100">
+                    {t(lang, 'marketTitle')}
+                  </h3>
+                  {(marketPriceModifier !== 0 || healingModifier !== 0) && (
+                    <p className="text-[11px] text-amber-300/90 tabular-nums">
+                      {marketPriceModifier !== 0
+                        ? `${lang === 'uk' ? 'Мод. цін подій' : 'Event Price Mod'}: ${marketPriceModifier > 0 ? `+${marketPriceModifier}` : marketPriceModifier}g`
+                        : ''}
+                      {marketPriceModifier !== 0 && healingModifier !== 0 ? ' · ' : ''}
+                      {healingModifier !== 0
+                        ? `${lang === 'uk' ? 'Лікування зараз' : 'Healing now'}: +${sanctuaryHealGain} HP`
+                        : ''}
+                    </p>
+                  )}
+                </div>
                 <div className="flex flex-wrap items-center gap-2">
                   {isAtMarketSettlement && (
                     <>
@@ -1129,7 +1528,9 @@ export const GameTable: React.FC<GameTableProps> = ({
                         onClick={onHealAtSanctuary}
                         className="rounded border border-emerald-700/70 bg-emerald-950/40 px-3 py-2 text-xs font-semibold text-emerald-200 hover:border-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed min-h-[40px]"
                       >
-                        {t(lang, 'healServiceAction')}
+                        {healingModifier === 0
+                          ? t(lang, 'healServiceAction')
+                          : `${t(lang, 'healServiceAction')} (→ +${sanctuaryHealGain} HP)`}
                       </button>
                       <button
                         type="button"
@@ -1157,7 +1558,7 @@ export const GameTable: React.FC<GameTableProps> = ({
               {isAtMarketSettlement && marketCards.length > 0 && (
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   {marketCards.map((mCard) => {
-                    const cost = Math.max(4, mCard.goldCost);
+                    const cost = Math.max(4, mCard.goldCost + marketPriceModifier);
                     const noSpace =
                       mCard.category === 'companion'
                         ? companions.length >= HERO_INVENTORY_LIMITS.maxCompanions
@@ -1271,34 +1672,70 @@ export const GameTable: React.FC<GameTableProps> = ({
           </section>
         </section>
 
-        {/* Right Column: Aged Parchment Chronicle Log */}
-        <aside className="parchment-panel rounded-lg p-5 flex flex-col max-h-[760px] lg:col-span-2 xl:col-span-1">
+        {/* Right Column: Aged Parchment Chronicle Log (Global vs Local tabs) */}
+        <aside className="parchment-panel rounded-lg p-5 flex flex-col max-h-[780px] lg:col-span-2 xl:col-span-1">
           <h3 className="font-display text-2xl font-bold text-[#241b11]">
             {t(lang, 'chronicleTitle')}
           </h3>
+          <div className="mt-2 flex flex-wrap gap-1">
+            {([
+              { id: 'all', label: t(lang, 'chronicleTabAll'), icon: null },
+              { id: 'global', label: t(lang, 'chronicleTabGlobal'), icon: <Globe className="h-3 w-3" aria-hidden="true" /> },
+              { id: 'local', label: t(lang, 'chronicleTabLocal'), icon: <MapPin className="h-3 w-3" aria-hidden="true" /> },
+            ] as const).map((tab) => {
+              const active = chronicleFilter === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setChronicleFilter(tab.id)}
+                  className={`inline-flex items-center gap-1 rounded border px-2.5 py-1 text-[11px] font-semibold transition-colors ${
+                    active
+                      ? 'border-[#6d421a] bg-[#2c1f12] text-amber-100'
+                      : 'border-[#9d7f4e]/50 bg-[#f6eedb]/70 text-[#4c3820] hover:bg-[#e9dcc0]'
+                  }`}
+                >
+                  {tab.icon}
+                  {tab.label}
+                </button>
+              );
+            })}
+          </div>
           <OrnamentalDivider darkInk />
           <div className="flex-1 overflow-y-auto space-y-2.5 pr-1">
-            {state.chronicle.map((entry) => (
-              <div
-                key={entry.id}
-                className="border-b border-[#9d7f4e]/35 pb-2 text-xs leading-relaxed"
-              >
-                <div className="font-mono text-[11px] text-[#6d5637] tabular-nums">
-                  {t(lang, 'roundLabel')} {entry.round} · {formatTimeOfDay(lang, entry.timeOfDay)}
-                </div>
+            {filteredChronicle.map((entry) => {
+              const scope = entry.scope ?? inferChronicleScope(entry.type, entry.playerId);
+              return (
                 <div
-                  className={
-                    entry.type === 'seal'
-                      ? 'text-[#7c2d12] font-semibold'
-                      : entry.type === 'combat'
-                        ? 'text-[#7f1d1d] font-medium'
-                        : 'text-[#241b11]'
-                  }
+                  key={entry.id}
+                  className="border-b border-[#9d7f4e]/35 pb-2 text-xs leading-relaxed"
                 >
-                  {pickText(lang, entry.text)}
+                  <div className="flex items-center justify-between gap-2 font-mono text-[11px] text-[#6d5637] tabular-nums">
+                    <span>
+                      {t(lang, 'roundLabel')} {entry.round} · {formatTimeOfDay(lang, entry.timeOfDay)}
+                    </span>
+                    <span
+                      className={`text-[10px] font-semibold uppercase ${
+                        scope === 'global' ? 'text-[#7c2d12]' : 'text-[#5b4630]'
+                      }`}
+                    >
+                      {scope === 'global' ? t(lang, 'chronicleTabGlobal') : t(lang, 'chronicleTabLocal')}
+                    </span>
+                  </div>
+                  <div
+                    className={
+                      entry.type === 'seal'
+                        ? 'text-[#7c2d12] font-semibold'
+                        : entry.type === 'combat'
+                          ? 'text-[#7f1d1d] font-medium'
+                          : 'text-[#241b11]'
+                    }
+                  >
+                    {pickText(lang, entry.text)}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </aside>
       </div>

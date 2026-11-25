@@ -152,7 +152,23 @@ export const GameManager = {
     await SaveManager.saveGame(state, label);
   },
 
+  async saveManualGame(state: GameState, label?: string): Promise<void> {
+    if (label?.trim()) {
+      await SaveManager.saveNewManualSlot(state, label);
+    } else {
+      await SaveManager.saveGame(state);
+    }
+  },
+
+  async saveAutoGame(state: GameState): Promise<void> {
+    await SaveManager.saveAuto(state);
+  },
+
   async continueSavedGame(saveId: string): Promise<GameState | null> {
     return SaveManager.loadGame(saveId);
+  },
+
+  async continueSavedGameWithReport(saveId: string) {
+    return SaveManager.loadGameWithReport(saveId);
   },
 };

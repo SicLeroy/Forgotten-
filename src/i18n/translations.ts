@@ -260,6 +260,27 @@ const UI_STRINGS = {
   aiStyleScholar: { uk: 'Дослідник', en: 'Scholar' },
   aiStyleTactician: { uk: 'Стратег', en: 'Tactician' },
   aiStyleWarden: { uk: 'Вартовий', en: 'Warden' },
+  turnQueueTitle: { uk: 'Черга ходів', en: 'Turn Queue' },
+  turnHandoffTitle: { uk: 'Передача керування гравцеві', en: 'Pass Device to Next Player' },
+  turnHandoffSubtitle: {
+    uk: 'Передайте пристрій наступному гравцеві. Приватні карти приховані до підтвердження готовності.',
+    en: 'Hand the device to the next player. Private cards stay hidden until ready.',
+  },
+  turnHandoffConfirm: { uk: 'Прийняти керування', en: 'Take Control' },
+  nextActivePlayerLabel: { uk: 'Наступний хід', en: 'Up Next' },
+  autoSaveBadge: { uk: 'Автозбереження', en: 'Autosave' },
+  manualSaveBadge: { uk: 'Ручне збереження', en: 'Manual Save' },
+  saveVersionLabel: { uk: 'Версія схеми', en: 'Schema v' },
+  integrityVerifiedLabel: { uk: 'Цілісність підтверджено', en: 'Integrity Verified' },
+  integrityWarningLabel: { uk: 'Потрібне відновлення', en: 'Needs Recovery' },
+  saveNewSlotAction: { uk: 'Зберегти як новий слот', en: 'Save New Slot' },
+  saveOverwriteAction: { uk: 'Швидко зберегти', en: 'Quick Save' },
+  resumeSessionTitle: { uk: 'Продовжити збережену партію', en: 'Resume Saved Match' },
+  recoveryNoticeTitle: { uk: 'Стан відновлено після перевірки цілісності', en: 'State Recovered After Integrity Check' },
+  saveCorruptedError: {
+    uk: 'Збереження пошкоджене і не підлягає відновленню.',
+    en: 'Save data is corrupted and could not be recovered.',
+  },
 } as const;
 
 export type UiKey = keyof typeof UI_STRINGS;

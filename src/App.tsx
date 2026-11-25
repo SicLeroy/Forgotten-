@@ -84,7 +84,13 @@ function AppContent() {
   const [activeView, setActiveView] = useState<ActiveView>('table');
   const [saves, setSaves] = useState<SaveSlotSummary[]>([]);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
+  const [pendingHandoffPlayerId, setPendingHandoffPlayerId] = useState<string | null>(null);
   const prevActiveMajorIdsRef = useRef<MajorWorldEventId[]>([]);
+  const latestStateRef = useRef<GameState | null>(null);
+
+  useEffect(() => {
+    latestStateRef.current = gameState;
+  }, [gameState]);
 
   const refreshSaves = useCallback(async () => {
     try {
@@ -95,16 +101,78 @@ function AppContent() {
     }
   }, []);
 
+  const persistAutoSave = useCallback(
+    (nextState: GameState) => {
+      if (nextState.phase !== 'PLAYING') return;
+      GameManager.saveAutoGame(nextState)
+        .then(() => refreshSaves())
+        .catch(() => {});
+    },
+    [refreshSaves]
+  );
+
+  const maybeQueueHotseatHandoff = useCallback((prevState: GameState, nextState: GameState) => {
+    if (nextState.phase !== 'PLAYING') {
+      setPendingHandoffPlayerId(null);
+      return;
+    }
+    const prevActive = getActivePlayer(prevState);
+    const nextActive = getActivePlayer(nextState);
+    const livingHumans = nextState.players.filter((p) => !p.isDefeated && !p.isAI);
+    if (prevActive.id !== nextActive.id && !nextActive.isAI && livingHumans.length > 1) {
+      setPendingHandoffPlayerId(nextActive.id);
+    }
+  }, []);
+
   useEffect(() => {
+    let mounted = true;
     SaveManager.loadLanguage()
       .then((savedLang) => {
-        if (savedLang === 'uk' || savedLang === 'en') {
+        if (mounted && (savedLang === 'uk' || savedLang === 'en')) {
           setLang(savedLang);
         }
       })
       .catch(() => {});
-    refreshSaves();
-  }, [refreshSaves]);
+
+    SaveManager.getResumableSession()
+      .then((resumed) => {
+        if (!mounted || !resumed?.state) return;
+        setGameState(resumed.state);
+        if (resumed.recovered && resumed.notice) {
+          setErrorBanner(resumed.notice[lang]);
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (mounted) refreshSaves();
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, [refreshSaves]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const handleFlushOnExit = () => {
+      const current = latestStateRef.current;
+      if (current && current.phase === 'PLAYING') {
+        GameManager.saveAutoGame(current).catch(() => {});
+      }
+    };
+    const handleVisibility = () => {
+      if (document.visibilityState === 'hidden') {
+        handleFlushOnExit();
+      }
+    };
+    window.addEventListener('pagehide', handleFlushOnExit);
+    window.addEventListener('beforeunload', handleFlushOnExit);
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      window.removeEventListener('pagehide', handleFlushOnExit);
+      window.removeEventListener('beforeunload', handleFlushOnExit);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, []);
 
   const activeMajorEventIdsKey = (gameState?.activeMajorEvents ?? []).map((e) => e.id).join(',');
   const activeLegacyWorldEventId = gameState?.activeWorldEventId ?? null;
@@ -145,8 +213,10 @@ function AppContent() {
 
     if (result.state.phase === 'VICTORY') {
       playSfx('victory');
+      SaveManager.clearActiveSession().catch(() => {});
     } else if (result.state.phase === 'DEFEAT') {
       playSfx('defeat');
+      SaveManager.clearActiveSession().catch(() => {});
     } else if (action.type === 'COMBAT_ATTACK') {
       playSfx(action.combatType === 'magic' ? 'magic' : 'hit');
     } else if (
@@ -170,18 +240,21 @@ function AppContent() {
       playSfx('click');
     }
 
+    maybeQueueHotseatHandoff(gameState, result.state);
     setErrorBanner(null);
     setGameState(result.state);
+    persistAutoSave(result.state);
   };
 
   const handleStartGame = async (config: NewGameConfig) => {
     soundEngine.unlock();
     playSfx('victory');
     const fresh = GameManager.startNewGame(config);
+    setPendingHandoffPlayerId(null);
     setErrorBanner(null);
     setGameState(fresh);
     setActiveView('table');
-    await GameManager.saveCurrentGame(fresh).catch(() => {});
+    await GameManager.saveAutoGame(fresh).catch(() => {});
     refreshSaves();
   };
 
@@ -193,9 +266,10 @@ function AppContent() {
       setErrorBanner(res.error[lang]);
       return;
     }
+    maybeQueueHotseatHandoff(gameState, res.state);
     setErrorBanner(null);
     setGameState(res.state);
-    await GameManager.saveCurrentGame(res.state).catch(() => {});
+    await GameManager.saveAutoGame(res.state).catch(() => {});
     refreshSaves();
   };
 
@@ -206,28 +280,41 @@ function AppContent() {
 
     const timer = window.setTimeout(() => {
       const afterAi = GameManager.runAiTurn(gameState);
+      maybeQueueHotseatHandoff(gameState, afterAi);
       setGameState(afterAi);
-      GameManager.saveCurrentGame(afterAi)
+      GameManager.saveAutoGame(afterAi)
         .then(() => refreshSaves())
         .catch(() => {});
     }, 600);
 
     return () => window.clearTimeout(timer);
-  }, [gameState, refreshSaves]);
+  }, [gameState, maybeQueueHotseatHandoff, refreshSaves]);
 
-  const handleSaveCurrent = async (label?: string) => {
+  const handleSaveCurrent = async (label?: string, asNewSlot = false) => {
     if (!gameState) return;
-    await GameManager.saveCurrentGame(gameState, label);
+    if (asNewSlot) {
+      await GameManager.saveManualGame(gameState, label || `Save R${gameState.round}`);
+    } else {
+      await GameManager.saveCurrentGame(gameState, label);
+    }
     await refreshSaves();
   };
 
   const handleLoadSave = async (saveId: string) => {
     playSfx('click');
-    const loaded = await GameManager.continueSavedGame(saveId);
-    if (loaded) {
-      setErrorBanner(null);
-      setGameState(loaded);
+    const loaded = await GameManager.continueSavedGameWithReport(saveId);
+    if (loaded.state) {
+      setPendingHandoffPlayerId(null);
+      setErrorBanner(loaded.recovered && loaded.notice ? loaded.notice[lang] : null);
+      setGameState(loaded.state);
       setActiveView('table');
+      if (loaded.state.phase === 'PLAYING') {
+        await SaveManager.setStorageBackendForTests; // keep session active via saveAuto or pointer
+        await GameManager.saveAutoGame(loaded.state).catch(() => {});
+        await refreshSaves();
+      }
+    } else {
+      setErrorBanner(loaded.notice?.[lang] ?? t(lang, 'saveCorruptedError'));
     }
   };
 
@@ -252,6 +339,15 @@ function AppContent() {
         }}
         onReturnToTitle={() => {
           playSfx('click');
+          if (gameState?.phase === 'PLAYING') {
+            GameManager.saveAutoGame(gameState)
+              .then(() => SaveManager.clearActiveSession())
+              .then(() => refreshSaves())
+              .catch(() => {});
+          } else {
+            SaveManager.clearActiveSession().catch(() => {});
+          }
+          setPendingHandoffPlayerId(null);
           setGameState(null);
           setActiveView('table');
           setErrorBanner(null);

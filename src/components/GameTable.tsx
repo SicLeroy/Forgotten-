@@ -172,6 +172,8 @@ interface GameTableProps {
   onCloseNpcDialog: () => void;
   onEndTurn: () => void;
   onQuickSave: () => void;
+  pendingHandoffPlayerId?: string | null;
+  onConfirmHandoff?: () => void;
 }
 
 const SEALS_ORDER: SealType[] = ['seal_power', 'seal_wisdom', 'seal_fate'];
@@ -229,6 +231,8 @@ export const GameTable: React.FC<GameTableProps> = ({
   onCloseNpcDialog,
   onEndTurn,
   onQuickSave,
+  pendingHandoffPlayerId,
+  onConfirmHandoff,
 }) => {
   const [chronicleFilter, setChronicleFilter] = useState<'all' | ChronicleScope>('all');
   const activePlayer = getActivePlayer(state);
@@ -345,6 +349,23 @@ export const GameTable: React.FC<GameTableProps> = ({
       ? Math.max(0, Math.min(100, Math.round((activePlayer.hp / activePlayer.maxHp) * 100)))
       : 0;
 
+  const isHandoffPending =
+    state.phase === 'PLAYING' &&
+    !activePlayer.isAI &&
+    Boolean(pendingHandoffPlayerId && pendingHandoffPlayerId === activePlayer.id);
+
+  const livingPlayersCount = state.players.filter((p) => !p.isDefeated).length;
+  let nextTurnPlayerId: string | null = null;
+  if (livingPlayersCount > 1) {
+    for (let step = 1; step <= state.players.length; step++) {
+      const candidate = state.players[(state.activePlayerIndex + step) % state.players.length];
+      if (!candidate.isDefeated) {
+        nextTurnPlayerId = candidate.id;
+        break;
+      }
+    }
+  }
+
   return (
     <>
       {visualFeedback.active &&
@@ -355,6 +376,55 @@ export const GameTable: React.FC<GameTableProps> = ({
             className={`pointer-events-none fixed inset-0 z-10 transition-opacity duration-500 ${overlayClass}`}
           />
         ))}
+      {isHandoffPending && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          data-testid="turn-handoff-screen"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-[#090b0f]/95 backdrop-blur-md p-4"
+        >
+          <div className="w-full max-w-lg rounded-lg ornate-frame bg-[#15181f] p-6 sm:p-8 text-center space-y-5 shadow-2xl">
+            <div className="text-xs font-semibold uppercase tracking-widest text-amber-400">
+              {t(lang, 'roundLabel')} {state.round} · {pickText(lang, dayNightInfo.label)} ·{' '}
+              {formatWeather(lang, state.weather)}
+            </div>
+            <h2 className="font-display text-2xl sm:text-3xl font-bold text-stone-100">
+              {t(lang, 'turnHandoffTitle')}
+            </h2>
+            <p className="text-xs sm:text-sm text-stone-300 leading-relaxed">
+              {t(lang, 'turnHandoffSubtitle')}
+            </p>
+            <div className="mx-auto flex max-w-sm items-center gap-4 rounded-md border border-amber-600/50 bg-[#111317] p-4 text-left">
+              <HeroAvatar
+                src={hero.portraitPath}
+                alt={activePlayer.name}
+                className="h-16 w-16 shrink-0 rounded-md border border-amber-500/60 object-cover"
+                fallbackLabel={pickText(lang, hero.className)}
+              />
+              <div className="min-w-0 flex-1 space-y-1">
+                <div className="font-display text-lg font-bold text-amber-200 truncate">
+                  {activePlayer.name}
+                </div>
+                <div className="text-xs text-stone-400 truncate">
+                  {pickText(lang, hero.className)} · {pickText(lang, currentLocation.name)}
+                </div>
+                <div className="flex flex-wrap items-center gap-3 text-xs font-mono text-stone-200 tabular-nums">
+                  <span>HP {activePlayer.hp}/{activePlayer.maxHp}</span>
+                  <span>{activePlayer.gold} {t(lang, 'goldLabel').toLowerCase()}</span>
+                  <span>{activePlayer.seals.length}/3 {t(lang, 'sealsTitle')}</span>
+                </div>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => onConfirmHandoff?.()}
+              className="w-full sm:w-auto rounded bg-amber-600 px-8 py-3 text-sm font-bold text-stone-950 hover:bg-amber-500 transition-colors min-h-[46px]"
+            >
+              {t(lang, 'turnHandoffConfirm')}
+            </button>
+          </div>
+        </div>
+      )}
       <main
         data-world-fx={visualFeedback.primaryEffectKey}
         className={`relative mx-auto max-w-[1440px] px-4 py-5 sm:px-6 overflow-x-clip ${visualFeedback.containerClassName}`}
@@ -466,6 +536,43 @@ export const GameTable: React.FC<GameTableProps> = ({
           {isNightWindow && (
             <span className="text-sky-300 font-medium">{t(lang, 'nightPassageOpenLabel')}</span>
           )}
+        </div>
+
+        {/* Turn Order Queue for 1-6 Local / Solo Participants */}
+        <div
+          aria-label={t(lang, 'turnQueueTitle')}
+          className="flex flex-wrap items-center gap-2 border-t border-stone-800/80 pt-2"
+        >
+          <span className="text-[11px] font-semibold text-stone-400 mr-1">
+            {t(lang, 'turnQueueTitle')}:
+          </span>
+          {state.players.map((pl, idx) => {
+            const isCurrent = idx === state.activePlayerIndex;
+            const isNext = pl.id === nextTurnPlayerId;
+            return (
+              <span
+                key={pl.id}
+                className={`inline-flex items-center gap-1.5 rounded border px-2 py-0.5 text-[11px] font-medium tabular-nums ${
+                  pl.isDefeated
+                    ? 'border-stone-800 bg-stone-950/60 text-stone-600 line-through'
+                    : isCurrent
+                      ? 'border-amber-500 bg-amber-600/20 text-amber-200 font-semibold'
+                      : isNext
+                        ? 'border-sky-700/60 bg-sky-950/30 text-sky-200'
+                        : 'border-stone-800 bg-[#111317] text-stone-300'
+                }`}
+              >
+                <span className="font-mono text-[10px] opacity-75">#{idx + 1}</span>
+                <span>{pl.name}</span>
+                {pl.isAI && (
+                  <span className="text-[10px] text-amber-400/90">({t(lang, 'aiLabel')})</span>
+                )}
+                {isNext && !pl.isDefeated && (
+                  <span className="text-[10px] text-sky-300">· {t(lang, 'nextActivePlayerLabel')}</span>
+                )}
+              </span>
+            );
+          })}
         </div>
       </div>
 

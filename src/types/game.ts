@@ -813,9 +813,32 @@ export interface EngineResult {
   error?: LocalizedText;
 }
 
+export type SaveSlotKind = 'manual' | 'autosave';
+
+export interface SaveIntegrityReport {
+  valid: boolean;
+  checksumMatched: boolean;
+  schemaVersion: number;
+  migratedFromVersion?: number;
+  repairedIssues: LocalizedText[];
+  fatalErrors: LocalizedText[];
+}
+
+export interface SaveLoadResult {
+  state: GameState | null;
+  recovered: boolean;
+  recoverySource: 'primary' | 'repaired' | 'backup' | 'none';
+  report: SaveIntegrityReport;
+  notice?: LocalizedText;
+}
+
 export interface SaveSlotSummary {
   saveId: string;
   label: string;
+  saveKind?: SaveSlotKind;
+  schemaVersion?: number;
+  checksumValid?: boolean;
+  hasBackup?: boolean;
   mode: GameMode;
   round: number;
   phase: GamePhase;

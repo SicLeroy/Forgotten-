@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { BookOpen, Coins, Compass, Heart, Shield, Sparkles, Sword } from 'lucide-react';
 import { CARD_MAP } from '../data/cards';
 import { HEROES, HERO_MAP } from '../data/heroes';
@@ -6,6 +6,7 @@ import { REGIONS } from '../data/regions';
 import { TEST_SCENARIO_PRESETS } from '../data/testFixtures';
 import { AiManager } from '../engine/AiManager';
 import { LocalizationManager } from '../i18n/LocalizationManager';
+import { checkOnlineServerAvailable } from '../online/OnlineClient';
 import {
   AiBehaviorStyle,
   AiDifficulty,
@@ -15,6 +16,7 @@ import {
   NewGameConfig,
   SaveSlotSummary,
 } from '../types/game';
+import { resolveAssetUrl } from '../utils/assetUrl';
 import { HeroAvatar } from './HeroAvatar';
 import { OrnamentalDivider } from './OrnamentalSymbols';
 
@@ -90,7 +92,19 @@ export const TitleMenu: React.FC<TitleMenuProps> = ({
   const [focusedSlot, setFocusedSlot] = useState<number>(0);
   const [inspectedHeroId, setInspectedHeroId] = useState<string>('hero_01');
   const [emblemFailed, setEmblemFailed] = useState(false);
+  const [onlineServerReachable, setOnlineServerReachable] = useState<boolean | null>(null);
   const setupFormRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (mode !== 'online') return;
+    let active = true;
+    checkOnlineServerAvailable().then((ok) => {
+      if (active) setOnlineServerReachable(ok);
+    });
+    return () => {
+      active = false;
+    };
+  }, [mode]);
 
   const inspectedHero = HERO_MAP.get(inspectedHeroId) ?? HEROES[0];
 
@@ -219,7 +233,7 @@ export const TitleMenu: React.FC<TitleMenuProps> = ({
             <div className="overflow-hidden rounded-md border border-amber-800/30 bg-[#111317]">
               {!emblemFailed ? (
                 <img
-                  src="/src/assets/images/emblem_three_seals_1795551918045.jpg"
+                  src={resolveAssetUrl('/src/assets/images/emblem_three_seals_1795551918045.jpg')}
                   alt="Three Seals Medallion"
                   referrerPolicy="no-referrer"
                   onError={() => setEmblemFailed(true)}
@@ -472,6 +486,17 @@ export const TitleMenu: React.FC<TitleMenuProps> = ({
                 )}
 
                 <p className="text-xs text-stone-400">{t(lang, 'onlineServerAuthoritativeNote')}</p>
+
+                {onlineServerReachable === false && (
+                  <div
+                    role="status"
+                    className="rounded border border-amber-700/70 bg-amber-950/40 px-3.5 py-2.5 text-xs text-amber-200 leading-relaxed"
+                  >
+                    {lang === 'uk'
+                      ? 'Сервер онлайн-мультиплеєра не виявлено (на статичному хостингу GitHub Pages працює тільки одиночна гра проти ШІ та локальна гра на одному пристрої; для онлайну потрібен запущений server.ts).'
+                      : 'Online multiplayer server was not detected (static GitHub Pages runs Solo vs AI and Local Hot-Seat only; online rooms require a running Node.js server.ts).'}
+                  </div>
+                )}
 
                 <div className="pt-2 flex justify-end">
                   <button
@@ -939,7 +964,7 @@ export const TitleMenu: React.FC<TitleMenuProps> = ({
             >
               <div className="relative h-44 bg-stone-900">
                 <img
-                  src={region.imagePath}
+                  src={resolveAssetUrl(region.imagePath)}
                   alt={pickText(lang, region.name)}
                   referrerPolicy="no-referrer"
                   className="h-full w-full object-cover"

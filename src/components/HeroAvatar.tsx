@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Shield } from 'lucide-react';
+import { resolveAssetUrl } from '../utils/assetUrl';
 
 interface HeroAvatarProps {
   src: string;
@@ -15,12 +16,13 @@ export const HeroAvatar: React.FC<HeroAvatarProps> = ({
   fallbackLabel,
 }) => {
   const [failed, setFailed] = useState(false);
+  const resolvedSrc = resolveAssetUrl(src);
 
   useEffect(() => {
     setFailed(false);
   }, [src]);
 
-  if (failed || !src) {
+  if (failed || !resolvedSrc) {
     return (
       <div
         role="img"
@@ -39,7 +41,7 @@ export const HeroAvatar: React.FC<HeroAvatarProps> = ({
 
   return (
     <img
-      src={src}
+      src={resolvedSrc}
       alt={alt}
       referrerPolicy="no-referrer"
       onError={() => setFailed(true)}

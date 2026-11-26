@@ -72,6 +72,7 @@ import { EnemyBestiaryTooltip } from './EnemyBestiaryTooltip';
 import { HeroAvatar } from './HeroAvatar';
 import { OrnamentalDivider, SealSigil } from './OrnamentalSymbols';
 import { RoomChatPanel } from './RoomChatPanel';
+import { resolveAssetUrl } from '../utils/assetUrl';
 import { resolveWorldEventVisuals, WORLD_EVENT_VISUAL_MAP } from '../utils/worldEventVisuals';
 
 const {
@@ -1058,7 +1059,7 @@ export const GameTable: React.FC<GameTableProps> = ({
           <div className="overflow-hidden rounded-lg border border-stone-800 bg-[#171b22]">
             <div className="relative h-40 sm:h-48 bg-stone-900">
               <img
-                src={currentRegion.imagePath}
+                src={resolveAssetUrl(currentRegion.imagePath)}
                 alt={pickText(lang, currentRegion.name)}
                 referrerPolicy="no-referrer"
                 className="h-full w-full object-cover"

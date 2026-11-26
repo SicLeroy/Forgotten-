@@ -46,10 +46,39 @@ export interface OnlineClientCallbacks {
   onError?: (err: { code: string; message: LocalizedText }) => void;
 }
 
+function getConfiguredServerOrigin(): string {
+  const raw =
+    typeof import.meta !== 'undefined' &&
+    (import.meta as unknown as { env?: { VITE_ONLINE_SERVER_URL?: string } }).env
+      ?.VITE_ONLINE_SERVER_URL
+      ? (import.meta as unknown as { env: { VITE_ONLINE_SERVER_URL: string } }).env
+          .VITE_ONLINE_SERVER_URL
+      : '';
+  return raw.trim().replace(/\/+$/, '');
+}
+
+function buildApiUrl(apiPath: string): string {
+  const origin = getConfiguredServerOrigin();
+  return origin ? `${origin}${apiPath}` : apiPath;
+}
+
 function buildWsUrl(): string {
+  const origin = getConfiguredServerOrigin();
+  if (origin) {
+    const wsOrigin = origin.replace(/^https:/i, 'wss:').replace(/^http:/i, 'ws:');
+    return `${wsOrigin}/ws`;
+  }
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   return `${proto}//${window.location.host}/ws`;
 }
+
+const STATIC_HOSTING_UNAVAILABLE_ERROR = {
+  errorCode: 'STATIC_HOST_NO_BACKEND',
+  error: {
+    uk: 'Онлайн-сервер недоступний на статичному хостингу (GitHub Pages). Одиночна гра та локальний режим на одному пристрої працюють без обмежень; онлайн-мультиплеєр потребує сервера Node.js (server.ts).',
+    en: 'Online server is unavailable on static hosting (GitHub Pages). Solo AI and Local Hot-Seat modes work without limits; online multiplayer requires a Node.js server (server.ts).',
+  },
+};
 
 export function generateCommandId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -58,43 +87,74 @@ export function generateCommandId(): string {
   return `cmd_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
-export async function createOnlineRoomApi(
-  payload: CreateRoomPayload
-): Promise<RoomJoinResult> {
-  const res = await fetch('/api/online/rooms', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
+async function parseJsonOrThrowStaticError<T>(res: Response): Promise<T> {
+  const contentType = res.headers.get('content-type') || '';
+  if (!contentType.includes('application/json')) {
+    throw STATIC_HOSTING_UNAVAILABLE_ERROR;
+  }
   const data = await res.json();
   if (!res.ok) {
     throw data;
   }
-  return data as RoomJoinResult;
+  return data as T;
+}
+
+export async function checkOnlineServerAvailable(): Promise<boolean> {
+  try {
+    const res = await fetch(buildApiUrl('/api/health'));
+    const contentType = res.headers.get('content-type') || '';
+    if (!res.ok || !contentType.includes('application/json')) return false;
+    const data = (await res.json()) as { ok?: boolean };
+    return Boolean(data.ok);
+  } catch {
+    return false;
+  }
+}
+
+export async function createOnlineRoomApi(
+  payload: CreateRoomPayload
+): Promise<RoomJoinResult> {
+  let res: Response;
+  try {
+    res = await fetch(buildApiUrl('/api/online/rooms'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  } catch {
+    throw STATIC_HOSTING_UNAVAILABLE_ERROR;
+  }
+  return parseJsonOrThrowStaticError<RoomJoinResult>(res);
 }
 
 export async function joinOnlineRoomApi(
   payload: JoinRoomPayload
 ): Promise<RoomJoinResult> {
-  const res = await fetch(`/api/online/rooms/${encodeURIComponent(payload.roomCode)}/join`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  const data = await res.json();
-  if (!res.ok) {
-    throw data;
+  let res: Response;
+  try {
+    res = await fetch(buildApiUrl(`/api/online/rooms/${encodeURIComponent(payload.roomCode)}/join`), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  } catch {
+    throw STATIC_HOSTING_UNAVAILABLE_ERROR;
   }
-  return data as RoomJoinResult;
+  return parseJsonOrThrowStaticError<RoomJoinResult>(res);
 }
 
 export async function fetchOnlineRoomPreviewApi(
   roomCode: string
 ): Promise<PublicOnlineRoom | null> {
-  const res = await fetch(`/api/online/rooms/${encodeURIComponent(roomCode)}`);
-  if (!res.ok) return null;
-  const data = (await res.json()) as { room?: PublicOnlineRoom };
-  return data.room ?? null;
+  try {
+    const res = await fetch(buildApiUrl(`/api/online/rooms/${encodeURIComponent(roomCode)}`));
+    const contentType = res.headers.get('content-type') || '';
+    if (!res.ok || !contentType.includes('application/json')) return null;
+    const data = (await res.json()) as { room?: PublicOnlineRoom };
+    return data.room ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export class OnlineClient {

@@ -1,8 +1,9 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { SfxKind, soundEngine } from './audio/SoundEngine';
 import { EndGameScreen } from './components/EndGameScreen';
 import { GameTable } from './components/GameTable';
 import { HeroDeckView } from './components/HeroDeckView';
+import { OnlineLobby } from './components/OnlineLobby';
 import { SavesView } from './components/SavesView';
 import { TitleMenu } from './components/TitleMenu';
 import { ActiveView, TopBar } from './components/TopBar';
@@ -10,8 +11,15 @@ import { WorldMapView } from './components/WorldMapView';
 import { GameAction, GameManager } from './engine/GameManager';
 import { getActivePlayer } from './engine/RulesEngine';
 import { LocalizationManager } from './i18n/LocalizationManager';
+import {
+  createOnlineRoomApi,
+  joinOnlineRoomApi,
+  OnlineClient,
+  OnlineConnectionStatus,
+} from './online/OnlineClient';
 import { SaveManager } from './storage/SaveManager';
 import {
+  AiDifficulty,
   EquipSlot,
   GameState,
   Language,
@@ -19,6 +27,7 @@ import {
   NewGameConfig,
   SaveSlotSummary,
 } from './types/game';
+import { OnlineChatMessage, PublicOnlineRoom } from './types/online';
 
 const { t } = LocalizationManager;
 
@@ -77,6 +86,43 @@ function loadAudioPrefs(): StoredAudioPrefs {
   }
 }
 
+function getInitialInviteRoomCode(): string {
+  if (typeof window === 'undefined') return '';
+  const raw = new URLSearchParams(window.location.search).get('room');
+  if (!raw) return '';
+  return raw.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+}
+
+function appendChatDedup(prev: OnlineChatMessage[], next: OnlineChatMessage): OnlineChatMessage[] {
+  if (prev.some((m) => m.id === next.id)) return prev;
+  return [...prev, next].slice(-120);
+}
+
+function playSfxForAction(playSfx: (kind: SfxKind) => void, action: GameAction): void {
+  if (action.type === 'COMBAT_ATTACK') {
+    playSfx(action.combatType === 'magic' ? 'magic' : 'hit');
+  } else if (
+    action.type === 'ROLL_MOVEMENT' ||
+    action.type === 'REROLL_MOVEMENT_DICE' ||
+    action.type === 'ROLL_ENCOUNTER_CHECK' ||
+    action.type === 'REROLL_ENCOUNTER_CHECK' ||
+    action.type === 'COMBAT_DEFEND' ||
+    action.type === 'COMBAT_FLEE' ||
+    action.type === 'ATTEMPT_TRIAL'
+  ) {
+    playSfx('dice');
+  } else if (
+    action.type === 'BUY_MARKET_CARD' ||
+    action.type === 'SELL_CARD' ||
+    action.type === 'BUY_SUPPLY' ||
+    action.type === 'REFRESH_MARKET'
+  ) {
+    playSfx('coin');
+  } else {
+    playSfx('click');
+  }
+}
+
 function AppContent() {
   const { playSfx } = useAudio();
   const [lang, setLang] = useState<Language>('uk');
@@ -85,8 +131,23 @@ function AppContent() {
   const [saves, setSaves] = useState<SaveSlotSummary[]>([]);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
   const [pendingHandoffPlayerId, setPendingHandoffPlayerId] = useState<string | null>(null);
+
+  // Authoritative Online Multiplayer state (tokens stay strictly in memory inside OnlineClient)
+  const initialRoomCode = useMemo(() => getInitialInviteRoomCode(), []);
+  const onlineClientRef = useRef<OnlineClient | null>(null);
+  const [onlineRoom, setOnlineRoom] = useState<PublicOnlineRoom | null>(null);
+  const [mySlotId, setMySlotId] = useState<string | null>(null);
+  const [onlineStateVersion, setOnlineStateVersion] = useState<number>(0);
+  const [onlineReconnectCode, setOnlineReconnectCode] = useState<string | null>(null);
+  const [onlineStatus, setOnlineStatus] = useState<OnlineConnectionStatus>('disconnected');
+  const [chatMessages, setChatMessages] = useState<OnlineChatMessage[]>([]);
+  const [onlineBusy, setOnlineBusy] = useState<boolean>(false);
+  const [onlineError, setOnlineError] = useState<string | null>(null);
+
   const prevActiveMajorIdsRef = useRef<MajorWorldEventId[]>([]);
   const latestStateRef = useRef<GameState | null>(null);
+  const langRef = useRef<Language>(lang);
+  langRef.current = lang;
 
   useEffect(() => {
     latestStateRef.current = gameState;
@@ -103,7 +164,7 @@ function AppContent() {
 
   const persistAutoSave = useCallback(
     (nextState: GameState) => {
-      if (nextState.phase !== 'PLAYING') return;
+      if (nextState.phase !== 'PLAYING' || nextState.mode === 'online') return;
       GameManager.saveAutoGame(nextState)
         .then(() => refreshSaves())
         .catch(() => {});
@@ -112,7 +173,7 @@ function AppContent() {
   );
 
   const maybeQueueHotseatHandoff = useCallback((prevState: GameState, nextState: GameState) => {
-    if (nextState.phase !== 'PLAYING') {
+    if (nextState.phase !== 'PLAYING' || nextState.mode === 'online') {
       setPendingHandoffPlayerId(null);
       return;
     }
@@ -124,6 +185,71 @@ function AppContent() {
     }
   }, []);
 
+  // Initialize WebSocket client & callbacks
+  useEffect(() => {
+    const client = new OnlineClient();
+    onlineClientRef.current = client;
+
+    client.setCallbacks({
+      onStatusChange: (status) => {
+        setOnlineStatus(status);
+      },
+      onRoomSync: ({ room, gameState: syncedGameState, yourSlotId, reconnectCode }) => {
+        setOnlineRoom(room);
+        setMySlotId(yourSlotId);
+        if (reconnectCode) setOnlineReconnectCode(reconnectCode);
+        setOnlineStateVersion(room.stateVersion);
+        setChatMessages(room.chatHistory);
+        setOnlineError(null);
+        setPendingHandoffPlayerId(null);
+        if (syncedGameState) {
+          setGameState(syncedGameState);
+        } else if (room.phase === 'LOBBY') {
+          setGameState(null);
+        }
+      },
+      onStateSync: ({ stateVersion, gameState: synced }) => {
+        setOnlineStateVersion(stateVersion);
+        setPendingHandoffPlayerId(null);
+        setErrorBanner(null);
+        if (synced.phase === 'VICTORY') {
+          playSfx('victory');
+        } else if (synced.phase === 'DEFEAT') {
+          playSfx('defeat');
+        }
+        setGameState(synced);
+      },
+      onPresenceUpdate: ({ room, systemMessage }) => {
+        setOnlineRoom(room);
+        setOnlineStateVersion(room.stateVersion);
+        if (systemMessage) {
+          setChatMessages((prev) => appendChatDedup(prev, systemMessage));
+        }
+      },
+      onChatMessage: (msg) => {
+        setChatMessages((prev) => appendChatDedup(prev, msg));
+      },
+      onActionAck: (ack) => {
+        setOnlineStateVersion(ack.stateVersion);
+        if (!ack.accepted && ack.error) {
+          setErrorBanner(ack.error[langRef.current]);
+        } else if (ack.accepted) {
+          setErrorBanner(null);
+        }
+      },
+      onError: (err) => {
+        const msg = err.message[langRef.current];
+        setOnlineError(msg);
+        setErrorBanner(msg);
+      },
+    });
+
+    return () => {
+      client.disconnect(false);
+      onlineClientRef.current = null;
+    };
+  }, [playSfx]);
+
   useEffect(() => {
     let mounted = true;
     SaveManager.loadLanguage()
@@ -134,28 +260,40 @@ function AppContent() {
       })
       .catch(() => {});
 
-    SaveManager.getResumableSession()
-      .then((resumed) => {
-        if (!mounted || !resumed?.state) return;
-        setGameState(resumed.state);
-        if (resumed.recovered && resumed.notice) {
-          setErrorBanner(resumed.notice[lang]);
-        }
-      })
-      .catch(() => {})
-      .finally(() => {
-        if (mounted) refreshSaves();
-      });
+    // Do not auto-resume local saves when user explicitly opened an invite link (?room=...)
+    if (!initialRoomCode) {
+      SaveManager.getResumableSession()
+        .then((resumed) => {
+          if (!mounted || !resumed?.state || onlineClientRef.current?.getCredentials().roomCode) {
+            return;
+          }
+          const active = getActivePlayer(resumed.state);
+          const livingHumans = resumed.state.players.filter((p) => !p.isDefeated && !p.isAI);
+          if (livingHumans.length > 1 && !active.isAI && resumed.state.mode !== 'online') {
+            setPendingHandoffPlayerId(active.id);
+          }
+          setGameState(resumed.state);
+          if (resumed.recovered && resumed.notice) {
+            setErrorBanner(resumed.notice[lang]);
+          }
+        })
+        .catch(() => {})
+        .finally(() => {
+          if (mounted) refreshSaves();
+        });
+    } else {
+      refreshSaves();
+    }
 
     return () => {
       mounted = false;
     };
-  }, [refreshSaves]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [refreshSaves, initialRoomCode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const handleFlushOnExit = () => {
       const current = latestStateRef.current;
-      if (current && current.phase === 'PLAYING') {
+      if (current && current.phase === 'PLAYING' && current.mode !== 'online') {
         GameManager.saveAutoGame(current).catch(() => {});
       }
     };
@@ -205,6 +343,14 @@ function AppContent() {
   const dispatchAction = (action: GameAction) => {
     if (!gameState) return;
     soundEngine.unlock();
+
+    if (gameState.mode === 'online' || onlineRoom) {
+      playSfxForAction(playSfx, action);
+      setErrorBanner(null);
+      onlineClientRef.current?.sendGameAction(action, onlineStateVersion);
+      return;
+    }
+
     const result = GameManager.dispatch(gameState, action);
     if (result.error) {
       setErrorBanner(result.error[lang]);
@@ -217,27 +363,8 @@ function AppContent() {
     } else if (result.state.phase === 'DEFEAT') {
       playSfx('defeat');
       SaveManager.clearActiveSession().catch(() => {});
-    } else if (action.type === 'COMBAT_ATTACK') {
-      playSfx(action.combatType === 'magic' ? 'magic' : 'hit');
-    } else if (
-      action.type === 'ROLL_MOVEMENT' ||
-      action.type === 'REROLL_MOVEMENT_DICE' ||
-      action.type === 'ROLL_ENCOUNTER_CHECK' ||
-      action.type === 'REROLL_ENCOUNTER_CHECK' ||
-      action.type === 'COMBAT_DEFEND' ||
-      action.type === 'COMBAT_FLEE' ||
-      action.type === 'ATTEMPT_TRIAL'
-    ) {
-      playSfx('dice');
-    } else if (
-      action.type === 'BUY_MARKET_CARD' ||
-      action.type === 'SELL_CARD' ||
-      action.type === 'BUY_SUPPLY' ||
-      action.type === 'REFRESH_MARKET'
-    ) {
-      playSfx('coin');
     } else {
-      playSfx('click');
+      playSfxForAction(playSfx, action);
     }
 
     maybeQueueHotseatHandoff(gameState, result.state);
@@ -258,9 +385,98 @@ function AppContent() {
     refreshSaves();
   };
 
+  const handleCreateOnlineRoom = async (payload: {
+    hostName: string;
+    heroId: string;
+    maxPlayers: number;
+    aiDifficulty: AiDifficulty;
+  }) => {
+    soundEngine.unlock();
+    setOnlineBusy(true);
+    setOnlineError(null);
+    try {
+      const joined = await createOnlineRoomApi(payload);
+      setOnlineRoom(joined.room);
+      setMySlotId(joined.slotId);
+      setOnlineReconnectCode(joined.reconnectCode);
+      setOnlineStateVersion(joined.room.stateVersion);
+      setChatMessages(joined.room.chatHistory);
+      setGameState(joined.gameState ?? null);
+      setActiveView('table');
+      setErrorBanner(null);
+      onlineClientRef.current?.connect(joined.room.roomCode, joined.sessionToken, joined.reconnectCode);
+    } catch (err: unknown) {
+      const maybeObj = err as { error?: Record<Language, string> } | null;
+      const msg =
+        maybeObj?.error?.[lang] ??
+        (lang === 'uk' ? 'Не вдалося створити онлайн-кімнату.' : 'Could not create online room.');
+      setOnlineError(msg);
+    } finally {
+      setOnlineBusy(false);
+    }
+  };
+
+  const handleJoinOnlineRoom = async (payload: {
+    roomCode: string;
+    playerName: string;
+    heroId: string;
+    reconnectCode?: string;
+  }) => {
+    soundEngine.unlock();
+    setOnlineBusy(true);
+    setOnlineError(null);
+    try {
+      const joined = await joinOnlineRoomApi(payload);
+      setOnlineRoom(joined.room);
+      setMySlotId(joined.slotId);
+      setOnlineReconnectCode(joined.reconnectCode);
+      setOnlineStateVersion(joined.room.stateVersion);
+      setChatMessages(joined.room.chatHistory);
+      setGameState(joined.gameState ?? null);
+      setActiveView('table');
+      setErrorBanner(null);
+      onlineClientRef.current?.connect(joined.room.roomCode, joined.sessionToken, joined.reconnectCode);
+    } catch (err: unknown) {
+      const maybeObj = err as { error?: Record<Language, string> } | null;
+      const msg =
+        maybeObj?.error?.[lang] ??
+        (lang === 'uk' ? 'Не вдалося приєднатися до кімнати.' : 'Could not join online room.');
+      setOnlineError(msg);
+    } finally {
+      setOnlineBusy(false);
+    }
+  };
+
+  const handleLeaveOnlineRoom = useCallback(() => {
+    playSfx('click');
+    onlineClientRef.current?.disconnect(true);
+    setOnlineRoom(null);
+    setMySlotId(null);
+    setOnlineStateVersion(0);
+    setOnlineReconnectCode(null);
+    setChatMessages([]);
+    setOnlineError(null);
+    setErrorBanner(null);
+    setPendingHandoffPlayerId(null);
+    setGameState(null);
+    setActiveView('table');
+    if (typeof window !== 'undefined' && window.location.search.includes('room=')) {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('room');
+      window.history.replaceState(null, '', url.pathname + url.search);
+    }
+  }, [playSfx]);
+
   const handleEndTurn = async () => {
     if (!gameState) return;
     playSfx('click');
+
+    if (gameState.mode === 'online' || onlineRoom) {
+      setErrorBanner(null);
+      onlineClientRef.current?.sendGameAction({ type: 'END_TURN' }, onlineStateVersion);
+      return;
+    }
+
     const res = GameManager.dispatch(gameState, { type: 'END_TURN' });
     if (res.error) {
       setErrorBanner(res.error[lang]);
@@ -273,8 +489,9 @@ function AppContent() {
     refreshSaves();
   };
 
+  // Local AI turn execution (disabled in authoritative online mode because server runs bots)
   useEffect(() => {
-    if (!gameState || gameState.phase !== 'PLAYING') return;
+    if (!gameState || gameState.phase !== 'PLAYING' || gameState.mode === 'online') return;
     const active = getActivePlayer(gameState);
     if (!active.isAI) return;
 
@@ -291,7 +508,7 @@ function AppContent() {
   }, [gameState, maybeQueueHotseatHandoff, refreshSaves]);
 
   const handleSaveCurrent = async (label?: string, asNewSlot = false) => {
-    if (!gameState) return;
+    if (!gameState || gameState.mode === 'online') return;
     if (asNewSlot) {
       await GameManager.saveManualGame(gameState, label || `Save R${gameState.round}`);
     } else {
@@ -302,6 +519,9 @@ function AppContent() {
 
   const handleLoadSave = async (saveId: string) => {
     playSfx('click');
+    if (onlineRoom) {
+      handleLeaveOnlineRoom();
+    }
     const loaded = await GameManager.continueSavedGameWithReport(saveId);
     if (loaded.state) {
       setPendingHandoffPlayerId(null);
@@ -309,7 +529,6 @@ function AppContent() {
       setGameState(loaded.state);
       setActiveView('table');
       if (loaded.state.phase === 'PLAYING') {
-        await SaveManager.setStorageBackendForTests; // keep session active via saveAuto or pointer
         await GameManager.saveAutoGame(loaded.state).catch(() => {});
         await refreshSaves();
       }
@@ -326,6 +545,36 @@ function AppContent() {
 
   const currentPhase = gameState ? gameState.phase : 'TITLE_MENU';
 
+  const isOnlineMatch = Boolean(gameState?.mode === 'online' && onlineRoom);
+  const activePlayerNow = gameState ? getActivePlayer(gameState) : null;
+  const myOnlineSeat =
+    isOnlineMatch && onlineRoom && mySlotId
+      ? onlineRoom.seats.find((s) => s.slotId === mySlotId) ?? null
+      : null;
+  const isMyTurn = isOnlineMatch
+    ? Boolean(
+        activePlayerNow &&
+          !activePlayerNow.isAI &&
+          myOnlineSeat?.playerId &&
+          myOnlineSeat.playerId === activePlayerNow.id
+      )
+    : true;
+
+  const onlineTableContext =
+    onlineRoom && mySlotId
+      ? {
+          room: onlineRoom,
+          mySlotId,
+          connectionStatus: onlineStatus,
+          reconnectCode: onlineReconnectCode,
+          chatMessages,
+          onSendChat: (text: string) => {
+            onlineClientRef.current?.send({ type: 'CHAT_SEND', text });
+          },
+          onLeaveRoom: handleLeaveOnlineRoom,
+        }
+      : null;
+
   return (
     <div className="min-h-screen bg-[#0e1014] text-stone-100">
       <TopBar
@@ -333,11 +582,23 @@ function AppContent() {
         onToggleLang={handleToggleLang}
         gamePhase={currentPhase}
         activeView={activeView}
+        onlineBadge={
+          onlineRoom
+            ? {
+                roomCode: onlineRoom.roomCode,
+                status: onlineStatus,
+              }
+            : null
+        }
         onChangeView={(view) => {
           playSfx('click');
           setActiveView(view);
         }}
         onReturnToTitle={() => {
+          if (onlineRoom) {
+            handleLeaveOnlineRoom();
+            return;
+          }
           playSfx('click');
           if (gameState?.phase === 'PLAYING') {
             GameManager.saveAutoGame(gameState)
@@ -371,12 +632,52 @@ function AppContent() {
             onLoadSave={handleLoadSave}
             onDeleteSave={handleDeleteSave}
           />
+        ) : onlineRoom && mySlotId ? (
+          <OnlineLobby
+            lang={lang}
+            room={onlineRoom}
+            mySlotId={mySlotId}
+            reconnectCode={onlineReconnectCode}
+            connectionStatus={onlineStatus}
+            chatMessages={chatMessages}
+            errorBanner={errorBanner ?? onlineError}
+            onSelectHero={(heroId) =>
+              onlineClientRef.current?.send({ type: 'SELECT_HERO', heroId })
+            }
+            onUpdateName={(name) =>
+              onlineClientRef.current?.send({ type: 'UPDATE_NAME', name })
+            }
+            onToggleReady={(ready) =>
+              onlineClientRef.current?.send({ type: 'SET_READY', ready })
+            }
+            onUpdateRoomConfig={(maxPlayers, aiDifficulty) =>
+              onlineClientRef.current?.send({
+                type: 'UPDATE_ROOM_CONFIG',
+                maxPlayers,
+                aiDifficulty,
+              })
+            }
+            onAddAiBot={() => onlineClientRef.current?.send({ type: 'ADD_AI_BOT' })}
+            onRemoveSeat={(slotId) =>
+              onlineClientRef.current?.send({ type: 'REMOVE_SEAT', targetSlotId: slotId })
+            }
+            onStartMatch={() => onlineClientRef.current?.send({ type: 'START_GAME' })}
+            onSendChat={(text) =>
+              onlineClientRef.current?.send({ type: 'CHAT_SEND', text })
+            }
+            onLeaveRoom={handleLeaveOnlineRoom}
+          />
         ) : (
           <TitleMenu
             lang={lang}
             recentSave={saves[0] ?? null}
+            initialRoomCode={initialRoomCode}
+            onlineError={onlineError}
+            onlineBusy={onlineBusy}
             onStartGame={handleStartGame}
             onLoadRecentSave={handleLoadSave}
+            onCreateOnlineRoom={handleCreateOnlineRoom}
+            onJoinOnlineRoom={handleJoinOnlineRoom}
           />
         )
       ) : gameState.phase === 'VICTORY' || gameState.phase === 'DEFEAT' ? (
@@ -384,7 +685,13 @@ function AppContent() {
           lang={lang}
           state={gameState}
           onPlayAgain={() => {
+            if (onlineRoom) {
+              handleLeaveOnlineRoom();
+              return;
+            }
             playSfx('click');
+            SaveManager.clearActiveSession().catch(() => {});
+            setPendingHandoffPlayerId(null);
             setGameState(null);
             setActiveView('table');
             setErrorBanner(null);
@@ -394,6 +701,7 @@ function AppContent() {
         <WorldMapView
           lang={lang}
           state={gameState}
+          isMyTurn={isMyTurn}
           onRollMovement={() => dispatchAction({ type: 'ROLL_MOVEMENT' })}
           onRerollMovementDice={() => dispatchAction({ type: 'REROLL_MOVEMENT_DICE' })}
           onStepMove={(locId) => dispatchAction({ type: 'STEP_MOVE', locationId: locId })}
@@ -408,6 +716,7 @@ function AppContent() {
         <HeroDeckView
           lang={lang}
           state={gameState}
+          isMyTurn={isMyTurn}
           onEquipFromInventory={(cardId) =>
             dispatchAction({ type: 'EQUIP_INVENTORY', cardId })
           }
@@ -434,7 +743,7 @@ function AppContent() {
       ) : activeView === 'saves' ? (
         <SavesView
           lang={lang}
-          currentState={gameState}
+          currentState={gameState.mode === 'online' ? null : gameState}
           saves={saves}
           onSaveCurrent={handleSaveCurrent}
           onLoadSave={handleLoadSave}
@@ -445,6 +754,7 @@ function AppContent() {
           lang={lang}
           state={gameState}
           errorBanner={errorBanner}
+          onlineContext={onlineTableContext}
           onRollMovement={() => dispatchAction({ type: 'ROLL_MOVEMENT' })}
           onRerollMovementDice={() => dispatchAction({ type: 'REROLL_MOVEMENT_DICE' })}
           onStepMove={(locationId) => dispatchAction({ type: 'STEP_MOVE', locationId })}
@@ -490,6 +800,11 @@ function AppContent() {
           }
           onCloseNpcDialog={() => dispatchAction({ type: 'CLOSE_NPC_DIALOG' })}
           onEndTurn={handleEndTurn}
+          pendingHandoffPlayerId={pendingHandoffPlayerId}
+          onConfirmHandoff={() => {
+            playSfx('click');
+            setPendingHandoffPlayerId(null);
+          }}
           onQuickSave={() => {
             playSfx('click');
             handleSaveCurrent()

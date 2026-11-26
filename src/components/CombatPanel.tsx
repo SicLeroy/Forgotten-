@@ -5,6 +5,7 @@ import { canFleeCombat, computeCombatPreview } from '../engine/RulesEngine';
 import { LocalizationManager } from '../i18n/LocalizationManager';
 import { CombatType, EnemyDefinition, GameState, Language } from '../types/game';
 import { DiceDieSvg } from './DiceRollerPanel';
+import { EnemyBestiaryTooltip } from './EnemyBestiaryTooltip';
 
 const { pickText, t } = LocalizationManager;
 
@@ -67,7 +68,22 @@ export const CombatPanel: React.FC<CombatPanelProps> = ({
             {traitText ? ` · ${pickText(lang, traitText)}` : ''}
           </div>
           <h2 className="font-display text-2xl font-bold text-stone-100 leading-tight">
-            {pickText(lang, physicalPreview.enemyName)}
+            <EnemyBestiaryTooltip
+              lang={lang}
+              enemyId={combat.enemyId}
+              overrides={{
+                name: physicalPreview.enemyName,
+                tier: physicalPreview.enemyTier,
+                maxHp: combat.enemyMaxHp,
+                attack: physicalPreview.enemyStat,
+                intellect: magicPreview.enemyStat,
+                defense: enemyDefense,
+                specialEffect: physicalPreview.enemySpecialEffect,
+                specialTrait: traitText ?? undefined,
+              }}
+            >
+              <span>{pickText(lang, physicalPreview.enemyName)}</span>
+            </EnemyBestiaryTooltip>
           </h2>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-stone-300 font-mono tabular-nums pt-0.5">
             <span className="inline-flex items-center gap-1 text-amber-300">

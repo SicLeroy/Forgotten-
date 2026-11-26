@@ -249,10 +249,10 @@ const indexedDbBackend: SaveStorageBackend = {
     });
   },
 
-  async getSetting<T>(key: string) {
+  async getSetting<T>(key: string): Promise<T | null> {
     if (!isIndexedDbAvailable()) return null;
     const db = await openDatabase();
-    return new Promise((resolve, reject) => {
+    return new Promise<T | null>((resolve, reject) => {
       const tx = db.transaction(STORE_SETTINGS, 'readonly');
       const req = tx.objectStore(STORE_SETTINGS).get(key);
       req.onsuccess = () => {
@@ -678,7 +678,7 @@ export function repairCorruptedState(rawState: unknown): {
       gold: Math.max(0, Number.isFinite(rawP?.gold) ? Number(rawP?.gold) : 0),
       experience: Math.max(0, Number.isFinite(rawP?.experience) ? Number(rawP?.experience) : 0),
       hand: filterCards(rawP?.hand, HERO_INVENTORY_LIMITS.maxHandSize),
-      inventory: filterCards(rawP?.inventory, HERO_INVENTORY_LIMITS.maxInventoryItems),
+      inventory: filterCards(rawP?.inventory, HERO_INVENTORY_LIMITS.maxOtherItems),
       companions: filterCards(rawP?.companions, HERO_INVENTORY_LIMITS.maxCompanions),
       curses: filterCards(rawP?.curses),
       equipment: {
@@ -945,24 +945,31 @@ export async function loadGameWithRecoveryFromIndexedDb(saveId: string): Promise
   }
 
   const schemaVersion = rec.schemaVersion ?? rec.state?.version ?? 1;
-  const checksumToCheck = rec.checksum;
-  const primaryCheckBeforeMigration = verifySaveIntegrity(
-    rec.state,
-    checksumToCheck,
-    schemaVersion
+  const checksumMatched = rec.checksum
+    ? computeStateChecksum(rec.state) === rec.checksum
+    : true;
+  const migrated = migrateSavePayload(rec.state);
+  const primaryCheck = verifySaveIntegrity(
+    migrated.state,
+    undefined,
+    SAVE_SCHEMA_VERSION,
+    schemaVersion < SAVE_SCHEMA_VERSION ? schemaVersion : migrated.migratedFromVersion
   );
+  primaryCheck.checksumMatched = checksumMatched;
+  if (!checksumMatched) {
+    primaryCheck.valid = false;
+    primaryCheck.fatalErrors.unshift({
+      uk: 'Контрольна сума збереження не збігається — виявлено пошкодження даних.',
+      en: 'Save checksum mismatch — data corruption detected.',
+    });
+  }
 
-  if (primaryCheckBeforeMigration.valid) {
-    const migrated = migrateSavePayload(rec.state);
+  if (primaryCheck.valid) {
     return {
       state: migrated.state,
       recovered: Boolean(migrated.migratedFromVersion),
       recoverySource: 'primary',
-      report: {
-        ...primaryCheckBeforeMigration,
-        schemaVersion: SAVE_SCHEMA_VERSION,
-        migratedFromVersion: migrated.migratedFromVersion,
-      },
+      report: primaryCheck,
       notice: migrated.migratedFromVersion
         ? {
             uk: `Збереження мігровано з версії v${migrated.migratedFromVersion} до v${SAVE_SCHEMA_VERSION}.`,
@@ -975,21 +982,25 @@ export async function loadGameWithRecoveryFromIndexedDb(saveId: string): Promise
   // Primary save failed integrity or checksum: attempt backup recovery first
   const backup = await backend.getBackup(saveId).catch(() => null);
   if (backup) {
+    const backupSchemaVersion = backup.schemaVersion ?? backup.state?.version ?? 1;
+    const backupChecksumOk = backup.checksum
+      ? computeStateChecksum(backup.state) === backup.checksum
+      : true;
+    const migratedBackup = migrateSavePayload(backup.state);
     const backupCheck = verifySaveIntegrity(
-      backup.state,
-      backup.checksum,
-      backup.schemaVersion ?? backup.state?.version ?? 1
+      migratedBackup.state,
+      undefined,
+      SAVE_SCHEMA_VERSION,
+      backupSchemaVersion < SAVE_SCHEMA_VERSION ? backupSchemaVersion : migratedBackup.migratedFromVersion
     );
-    if (backupCheck.valid) {
-      const migratedBackup = migrateSavePayload(backup.state);
+    backupCheck.checksumMatched = backupChecksumOk;
+    if (backupChecksumOk && backupCheck.valid) {
       return {
         state: migratedBackup.state,
         recovered: true,
         recoverySource: 'backup',
         report: {
           ...backupCheck,
-          schemaVersion: SAVE_SCHEMA_VERSION,
-          migratedFromVersion: migratedBackup.migratedFromVersion,
           repairedIssues: [
             {
               uk: 'Основне збереження було пошкоджено — відновлено останню перевірену резервну копію.',
@@ -1016,7 +1027,7 @@ export async function loadGameWithRecoveryFromIndexedDb(saveId: string): Promise
         recoverySource: 'repaired',
         report: {
           ...postRepairReport,
-          checksumMatched: primaryCheckBeforeMigration.checksumMatched,
+          checksumMatched: primaryCheck.checksumMatched,
           repairedIssues: issues,
         },
         notice: {
@@ -1031,7 +1042,7 @@ export async function loadGameWithRecoveryFromIndexedDb(saveId: string): Promise
     state: null,
     recovered: false,
     recoverySource: 'none',
-    report: primaryCheckBeforeMigration,
+    report: primaryCheck,
     notice: {
       uk: 'Збереження пошкоджене і не підлягає відновленню.',
       en: 'Save data is corrupted and could not be recovered.',

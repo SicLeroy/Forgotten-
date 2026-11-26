@@ -32,6 +32,7 @@ interface HeroDeckViewProps {
   onSellCard?: (source: 'hand' | 'inventory', cardId: string) => void;
   onCleanseCurse?: (curseCardId?: string) => void;
   onUpgradeStat?: (stat: 'strength' | 'intellect') => void;
+  isMyTurn?: boolean;
 }
 
 const SLOTS: EquipSlot[] = ['weapon', 'armor'];
@@ -60,11 +61,13 @@ export const HeroDeckView: React.FC<HeroDeckViewProps> = ({
   onSellCard,
   onCleanseCurse,
   onUpgradeStat,
+  isMyTurn = true,
 }) => {
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<CardCategory | 'all'>('all');
 
   const activePlayer = state ? getActivePlayer(state) : null;
+  const isInteractionLocked = Boolean(activePlayer?.isAI || !isMyTurn);
   const hero = activePlayer ? HERO_MAP.get(activePlayer.heroId) : null;
   const effStats = activePlayer ? getPlayerEffectiveStats(activePlayer) : null;
   const currentLoc = activePlayer ? LOCATION_MAP.get(activePlayer.locationId) : null;
@@ -205,7 +208,7 @@ export const HeroDeckView: React.FC<HeroDeckViewProps> = ({
                       <button
                         type="button"
                         disabled={
-                          activePlayer.isAI ||
+                          isInteractionLocked ||
                           activePlayer.experience < HERO_STAT_LIMITS.xpPerStatUpgrade ||
                           activePlayer.strength >= HERO_STAT_LIMITS.maxStrength
                         }
@@ -217,7 +220,7 @@ export const HeroDeckView: React.FC<HeroDeckViewProps> = ({
                       <button
                         type="button"
                         disabled={
-                          activePlayer.isAI ||
+                          isInteractionLocked ||
                           activePlayer.experience < HERO_STAT_LIMITS.xpPerStatUpgrade ||
                           activePlayer.intellect >= HERO_STAT_LIMITS.maxIntellect
                         }
@@ -267,7 +270,7 @@ export const HeroDeckView: React.FC<HeroDeckViewProps> = ({
                           <div className="text-stone-500 mt-0.5">{t(lang, 'emptySlot')}</div>
                         )}
                       </div>
-                      {card && !activePlayer.isAI && (
+                      {card && !isInteractionLocked && (
                         <button
                           type="button"
                           disabled={
@@ -304,7 +307,7 @@ export const HeroDeckView: React.FC<HeroDeckViewProps> = ({
                           card={comp}
                           showRulesDetail
                           actions={
-                            !activePlayer.isAI && onDismissCompanion
+                            !isInteractionLocked && onDismissCompanion
                               ? [
                                   {
                                     label: t(lang, 'dismissCompanionAction'),
@@ -340,7 +343,7 @@ export const HeroDeckView: React.FC<HeroDeckViewProps> = ({
                           card={curse}
                           showRulesDetail
                           actions={
-                            canCleanseHere && !activePlayer.isAI && onCleanseCurse
+                            canCleanseHere && !isInteractionLocked && onCleanseCurse
                               ? [
                                   {
                                     label: t(lang, 'cleanseServiceAction'),
@@ -376,7 +379,7 @@ export const HeroDeckView: React.FC<HeroDeckViewProps> = ({
                     const card = CARD_MAP.get(cid);
                     if (!card) return null;
                     const actions: CardTileAction[] = [];
-                    if (!activePlayer.isAI) {
+                    if (!isInteractionLocked) {
                       if (card.equipSlot) {
                         actions.push({
                           label: t(lang, 'equipCard'),

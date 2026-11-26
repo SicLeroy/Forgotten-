@@ -13,7 +13,9 @@ import {
   Flame,
   Globe,
   Heart,
+  KeyRound,
   Lock,
+  LogOut,
   MapPin,
   MessageSquare,
   Moon,
@@ -26,11 +28,14 @@ import {
   Sunset,
   Sword,
   Users,
+  Wifi,
+  WifiOff,
   Wind,
   X,
   Zap,
 } from 'lucide-react';
 import { CARD_MAP } from '../data/cards';
+import { ENEMY_MAP } from '../data/enemies';
 import { HERO_MAP } from '../data/heroes';
 import { LOCATION_MAP } from '../data/locations';
 import { NPC_MAP } from '../data/npcs';
@@ -58,11 +63,15 @@ import {
   TurnCycleStep,
   WeatherType,
 } from '../types/game';
+import { OnlineConnectionStatus } from '../online/OnlineClient';
+import { OnlineChatMessage, PublicOnlineRoom } from '../types/online';
 import { CardTile, CardTileAction } from './CardTile';
 import { CombatPanel } from './CombatPanel';
 import { DiceDieSvg, DiceRollerPanel } from './DiceRollerPanel';
+import { EnemyBestiaryTooltip } from './EnemyBestiaryTooltip';
 import { HeroAvatar } from './HeroAvatar';
 import { OrnamentalDivider, SealSigil } from './OrnamentalSymbols';
+import { RoomChatPanel } from './RoomChatPanel';
 import { resolveWorldEventVisuals, WORLD_EVENT_VISUAL_MAP } from '../utils/worldEventVisuals';
 
 const {
@@ -174,6 +183,15 @@ interface GameTableProps {
   onQuickSave: () => void;
   pendingHandoffPlayerId?: string | null;
   onConfirmHandoff?: () => void;
+  onlineContext?: {
+    room: PublicOnlineRoom;
+    mySlotId: string;
+    connectionStatus: OnlineConnectionStatus;
+    reconnectCode: string | null;
+    chatMessages: OnlineChatMessage[];
+    onSendChat: (text: string) => void;
+    onLeaveRoom: () => void;
+  } | null;
 }
 
 const SEALS_ORDER: SealType[] = ['seal_power', 'seal_wisdom', 'seal_fate'];
@@ -233,9 +251,17 @@ export const GameTable: React.FC<GameTableProps> = ({
   onQuickSave,
   pendingHandoffPlayerId,
   onConfirmHandoff,
+  onlineContext = null,
 }) => {
   const [chronicleFilter, setChronicleFilter] = useState<'all' | ChronicleScope>('all');
   const activePlayer = getActivePlayer(state);
+  const mySeat = onlineContext
+    ? onlineContext.room.seats.find((s) => s.slotId === onlineContext.mySlotId) ?? null
+    : null;
+  const isMyTurn = onlineContext
+    ? !activePlayer.isAI && Boolean(mySeat?.playerId && mySeat.playerId === activePlayer.id)
+    : true;
+  const isInteractionLocked = activePlayer.isAI || !isMyTurn;
   const hero = HERO_MAP.get(activePlayer.heroId)!;
   const effStats = getPlayerEffectiveStats(activePlayer);
   const currentLocation = LOCATION_MAP.get(activePlayer.locationId)!;
@@ -334,7 +360,7 @@ export const GameTable: React.FC<GameTableProps> = ({
   const activeDialogNode =
     activeDialog && activeDialogNpc ? activeDialogNpc.nodes[activeDialog.nodeId] ?? null : null;
   const activeDialogOptions =
-    activeDialog && activeDialogNpc && !activePlayer.isAI
+    activeDialog && activeDialogNpc && !isInteractionLocked
       ? NpcManager.getAvailableOptions(state, activePlayer, activeDialogNpc, activeDialog.nodeId)
       : [];
 
@@ -350,6 +376,7 @@ export const GameTable: React.FC<GameTableProps> = ({
       : 0;
 
   const isHandoffPending =
+    state.mode !== 'online' &&
     state.phase === 'PLAYING' &&
     !activePlayer.isAI &&
     Boolean(pendingHandoffPlayerId && pendingHandoffPlayerId === activePlayer.id);
@@ -513,13 +540,15 @@ export const GameTable: React.FC<GameTableProps> = ({
             ) : (
               <span className="text-stone-400">{t(lang, 'noActiveEvent')}</span>
             )}
-            <button
-              type="button"
-              onClick={onQuickSave}
-              className="rounded border border-stone-700 bg-stone-900 px-3.5 py-2 text-xs font-semibold text-stone-200 hover:border-amber-500/60 hover:text-amber-300 transition-colors whitespace-nowrap shrink-0 min-h-[38px]"
-            >
-              {t(lang, 'saveNow')}
-            </button>
+            {!onlineContext && (
+              <button
+                type="button"
+                onClick={onQuickSave}
+                className="rounded border border-stone-700 bg-stone-900 px-3.5 py-2 text-xs font-semibold text-stone-200 hover:border-amber-500/60 hover:text-amber-300 transition-colors whitespace-nowrap shrink-0 min-h-[38px]"
+              >
+                {t(lang, 'saveNow')}
+              </button>
+            )}
           </div>
         </div>
 
@@ -538,7 +567,61 @@ export const GameTable: React.FC<GameTableProps> = ({
           )}
         </div>
 
-        {/* Turn Order Queue for 1-6 Local / Solo Participants */}
+        {onlineContext && (
+          <div className="flex flex-wrap items-center justify-between gap-2.5 border-t border-stone-800/80 pt-2 text-[11px]">
+            <div className="flex flex-wrap items-center gap-2">
+              <span
+                className={`inline-flex items-center gap-1.5 rounded border px-2 py-0.5 font-semibold ${
+                  onlineContext.connectionStatus === 'connected'
+                    ? 'border-emerald-700/60 bg-emerald-950/40 text-emerald-300'
+                    : onlineContext.connectionStatus === 'reconnecting'
+                      ? 'border-amber-700/60 bg-amber-950/40 text-amber-300'
+                      : 'border-rose-700/60 bg-rose-950/40 text-rose-300'
+                }`}
+              >
+                {onlineContext.connectionStatus === 'connected' ? (
+                  <Wifi className="h-3 w-3" aria-hidden="true" />
+                ) : (
+                  <WifiOff className="h-3 w-3" aria-hidden="true" />
+                )}
+                {onlineContext.connectionStatus === 'connected'
+                  ? t(lang, 'onlineConnectedBadge')
+                  : onlineContext.connectionStatus === 'reconnecting'
+                    ? t(lang, 'onlineReconnectingBadge')
+                    : t(lang, 'onlineDisconnectedBadge')}
+              </span>
+              <span className="font-mono text-amber-300 font-semibold">
+                {t(lang, 'onlineRoomCodeLabel')}: {onlineContext.room.roomCode}
+              </span>
+              {onlineContext.reconnectCode && (
+                <span className="inline-flex items-center gap-1 font-mono text-emerald-300">
+                  <KeyRound className="h-3 w-3" aria-hidden="true" />
+                  {onlineContext.reconnectCode}
+                </span>
+              )}
+              <span
+                className={`rounded border px-2 py-0.5 font-semibold ${
+                  isMyTurn
+                    ? 'border-amber-500 bg-amber-500/20 text-amber-200'
+                    : 'border-stone-700 bg-stone-900 text-stone-300'
+                }`}
+              >
+                {isMyTurn ? t(lang, 'onlineYourTurnBadge') : t(lang, 'onlineSpectatingTurnBadge')}
+              </span>
+            </div>
+
+            <button
+              type="button"
+              onClick={onlineContext.onLeaveRoom}
+              className="inline-flex items-center gap-1 rounded border border-stone-700 bg-stone-900 px-2.5 py-1 text-[11px] font-semibold text-rose-300 hover:border-rose-500/60 transition-colors"
+            >
+              <LogOut className="h-3 w-3" aria-hidden="true" />
+              {t(lang, 'onlineLeaveRoomAction')}
+            </button>
+          </div>
+        )}
+
+        {/* Turn Order Queue for 1-6 Participants */}
         <div
           aria-label={t(lang, 'turnQueueTitle')}
           className="flex flex-wrap items-center gap-2 border-t border-stone-800/80 pt-2"
@@ -549,6 +632,9 @@ export const GameTable: React.FC<GameTableProps> = ({
           {state.players.map((pl, idx) => {
             const isCurrent = idx === state.activePlayerIndex;
             const isNext = pl.id === nextTurnPlayerId;
+            const seat = onlineContext
+              ? onlineContext.room.seats.find((s) => s.playerId === pl.id) ?? null
+              : null;
             return (
               <span
                 key={pl.id}
@@ -562,6 +648,18 @@ export const GameTable: React.FC<GameTableProps> = ({
                         : 'border-stone-800 bg-[#111317] text-stone-300'
                 }`}
               >
+                {seat && !seat.isAI && (
+                  <span
+                    className={`h-1.5 w-1.5 rounded-full ${
+                      seat.connected ? 'bg-emerald-400' : 'bg-rose-400'
+                    }`}
+                    title={
+                      seat.connected
+                        ? t(lang, 'onlineConnectedBadge')
+                        : t(lang, 'onlineDisconnectedBadge')
+                    }
+                  />
+                )}
                 <span className="font-mono text-[10px] opacity-75">#{idx + 1}</span>
                 <span>{pl.name}</span>
                 {pl.isAI && (
@@ -724,7 +822,7 @@ export const GameTable: React.FC<GameTableProps> = ({
               <button
                 type="button"
                 disabled={
-                  activePlayer.isAI ||
+                  isInteractionLocked ||
                   activePlayer.experience < HERO_STAT_LIMITS.xpPerStatUpgrade ||
                   activePlayer.strength >= HERO_STAT_LIMITS.maxStrength
                 }
@@ -736,7 +834,7 @@ export const GameTable: React.FC<GameTableProps> = ({
               <button
                 type="button"
                 disabled={
-                  activePlayer.isAI ||
+                  isInteractionLocked ||
                   activePlayer.experience < HERO_STAT_LIMITS.xpPerStatUpgrade ||
                   activePlayer.intellect >= HERO_STAT_LIMITS.maxIntellect
                 }
@@ -761,7 +859,7 @@ export const GameTable: React.FC<GameTableProps> = ({
               </div>
               <button
                 type="button"
-                disabled={activePlayer.isAI || activePlayer.abilityUsedThisTurn}
+                disabled={isInteractionLocked || activePlayer.abilityUsedThisTurn}
                 onClick={onUseAbility}
                 className="w-full rounded border border-stone-700 bg-stone-900 px-3 py-2.5 text-left text-xs transition-colors hover:border-amber-500/60 disabled:opacity-45 disabled:cursor-not-allowed min-h-[44px]"
               >
@@ -801,7 +899,7 @@ export const GameTable: React.FC<GameTableProps> = ({
                         <div className="font-semibold text-emerald-300 leading-snug">
                           {pickText(lang, comp.name)}
                         </div>
-                        {!activePlayer.isAI && (
+                        {!isInteractionLocked && (
                           <button
                             type="button"
                             onClick={() => onDismissCompanion(comp.id)}
@@ -1100,7 +1198,7 @@ export const GameTable: React.FC<GameTableProps> = ({
                           {def.rewards.drawCards > 0 ? ` · +${def.rewards.drawCards} card(s)` : ''}
                         </div>
 
-                        {!activePlayer.isAI && (
+                        {!isInteractionLocked && (
                           <div className="space-y-1">
                             <button
                               type="button"
@@ -1131,14 +1229,24 @@ export const GameTable: React.FC<GameTableProps> = ({
           <DiceRollerPanel
             lang={lang}
             state={state}
+            isMyTurn={isMyTurn}
             onRerollMovementDice={onRerollMovementDice}
             onRerollEncounterCheck={onRerollEncounterCheck}
           />
 
-          {/* Active Stage: AI Waiting / Combat / Encounter / Action Controls */}
-          {activePlayer.isAI ? (
-            <section className="rounded-lg border border-stone-800 bg-[#171b22] p-6 text-center">
-              <p className="font-display text-xl text-amber-300">{t(lang, 'aiThinking')}</p>
+          {/* Active Stage: AI / Opponent Waiting / Combat / Encounter / Action Controls */}
+          {isInteractionLocked ? (
+            <section className="rounded-lg border border-stone-800 bg-[#171b22] p-6 text-center space-y-1.5">
+              <p className="font-display text-xl text-amber-300">
+                {activePlayer.isAI
+                  ? t(lang, 'aiThinking')
+                  : `${t(lang, 'onlineWaitingForTurnTitle')} — ${activePlayer.name}`}
+              </p>
+              {onlineContext && (
+                <p className="text-xs text-stone-400">
+                  {t(lang, 'onlineServerAuthoritativeNote')}
+                </p>
+              )}
             </section>
           ) : state.turnPhase === 'COMBAT' && state.combat ? (
             <CombatPanel
@@ -1298,6 +1406,38 @@ export const GameTable: React.FC<GameTableProps> = ({
             </section>
           ) : (
             <section className="rounded-lg border border-stone-800 bg-[#171b22] p-5 space-y-5">
+              {/* Hoverable Bestiary Preview for Guardian / Boss on Current Location */}
+              {(() => {
+                const lairEnemyId = canChallengeGateGuardian
+                  ? 'enemy_gate_guardian'
+                  : canChallengeSeal
+                    ? currentLocation.sealGuardianId ?? null
+                    : canChallengeCitadel
+                      ? citadelEnemyId
+                      : canChallengeVoidLord
+                        ? 'enemy_void_lord'
+                        : null;
+                const lairEnemy = lairEnemyId ? ENEMY_MAP.get(lairEnemyId) : null;
+                if (!lairEnemy) return null;
+                return (
+                  <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-rose-800/50 bg-[#18131a] px-3.5 py-2.5 text-xs">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-semibold text-rose-300">
+                        {t(lang, 'lairGuardianLabel')}:
+                      </span>
+                      <EnemyBestiaryTooltip lang={lang} enemyId={lairEnemy.id}>
+                        <span className="font-display text-sm font-bold text-stone-100">
+                          {pickText(lang, lairEnemy.name)}
+                        </span>
+                      </EnemyBestiaryTooltip>
+                    </div>
+                    <span className="font-mono text-[11px] text-stone-400 tabular-nums">
+                      HP {lairEnemy.maxHp} · ATK {lairEnemy.attack} · INT {lairEnemy.intellect ?? Math.max(1, lairEnemy.attack - 1)}
+                    </span>
+                  </div>
+                );
+              })()}
+
               {/* Primary Action Controls */}
               <div className="flex flex-wrap gap-2.5">
                 <button
@@ -1487,7 +1627,7 @@ export const GameTable: React.FC<GameTableProps> = ({
           )}
 
           {/* NPCs at Current Location & Interactive Branching Dialogue */}
-          {!activePlayer.isAI && state.turnPhase === 'ACTION' && npcsHere.length > 0 && (
+          {!isInteractionLocked && state.turnPhase === 'ACTION' && npcsHere.length > 0 && (
             <section className="rounded-lg border border-stone-800 bg-[#171b22] p-5 space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-2 border-b border-stone-800 pb-3">
                 <h3 className="inline-flex items-center gap-2 font-display text-xl font-bold text-stone-100">
@@ -1622,7 +1762,7 @@ export const GameTable: React.FC<GameTableProps> = ({
           )}
 
           {/* Settlement Trade, Healing & Curse Purification */}
-          {!activePlayer.isAI && isAtCleanseSite && (
+          {!isInteractionLocked && isAtCleanseSite && (
             <section className="rounded-lg border border-stone-800 bg-[#171b22] p-5 space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-3 border-b border-stone-800 pb-3">
                 <div>
@@ -1738,7 +1878,7 @@ export const GameTable: React.FC<GameTableProps> = ({
                       : t(lang, 'useItemAction');
 
                   const primaryDisabled =
-                    activePlayer.isAI ||
+                    isInteractionLocked ||
                     !playableNow ||
                     (card.category === 'companion' &&
                       companions.length >= HERO_INVENTORY_LIMITS.maxCompanions);
@@ -1757,13 +1897,13 @@ export const GameTable: React.FC<GameTableProps> = ({
                       label: `${lang === 'uk' ? 'У сумку' : 'Store'} (${activePlayer.inventory.length}/${HERO_INVENTORY_LIMITS.maxOtherItems})`,
                       onClick: () => onStoreInventory(card.id),
                       disabled:
-                        activePlayer.isAI ||
+                        isInteractionLocked ||
                         activePlayer.inventory.length >= HERO_INVENTORY_LIMITS.maxOtherItems,
                       tone: 'secondary',
                     });
                   }
 
-                  if (isAtMarketSettlement && !activePlayer.isAI) {
+                  if (isAtMarketSettlement && !isInteractionLocked) {
                     cardActions.push({
                       label: `${t(lang, 'sellCard')} (+${sellPrice}g)`,
                       onClick: () => onSellCard('hand', card.id),
@@ -1771,7 +1911,7 @@ export const GameTable: React.FC<GameTableProps> = ({
                     });
                   }
 
-                  if (!activePlayer.isAI) {
+                  if (!isInteractionLocked) {
                     cardActions.push({
                       label: t(lang, 'discardAction'),
                       onClick: () => onDiscardHandCard(card.id),
@@ -1794,72 +1934,83 @@ export const GameTable: React.FC<GameTableProps> = ({
           </section>
         </section>
 
-        {/* Right Column: Aged Parchment Chronicle Log (Global vs Local tabs) */}
-        <aside className="parchment-panel rounded-lg p-5 flex flex-col max-h-[780px] lg:col-span-2 xl:col-span-1">
-          <h3 className="font-display text-2xl font-bold text-[#241b11]">
-            {t(lang, 'chronicleTitle')}
-          </h3>
-          <div className="mt-2 flex flex-wrap gap-1">
-            {([
-              { id: 'all', label: t(lang, 'chronicleTabAll'), icon: null },
-              { id: 'global', label: t(lang, 'chronicleTabGlobal'), icon: <Globe className="h-3 w-3" aria-hidden="true" /> },
-              { id: 'local', label: t(lang, 'chronicleTabLocal'), icon: <MapPin className="h-3 w-3" aria-hidden="true" /> },
-            ] as const).map((tab) => {
-              const active = chronicleFilter === tab.id;
-              return (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => setChronicleFilter(tab.id)}
-                  className={`inline-flex items-center gap-1 rounded border px-2.5 py-1 text-[11px] font-semibold transition-colors ${
-                    active
-                      ? 'border-[#6d421a] bg-[#2c1f12] text-amber-100'
-                      : 'border-[#9d7f4e]/50 bg-[#f6eedb]/70 text-[#4c3820] hover:bg-[#e9dcc0]'
-                  }`}
-                >
-                  {tab.icon}
-                  {tab.label}
-                </button>
-              );
-            })}
-          </div>
-          <OrnamentalDivider darkInk />
-          <div className="flex-1 overflow-y-auto space-y-2.5 pr-1">
-            {filteredChronicle.map((entry) => {
-              const scope = entry.scope ?? inferChronicleScope(entry.type, entry.playerId);
-              return (
-                <div
-                  key={entry.id}
-                  className="border-b border-[#9d7f4e]/35 pb-2 text-xs leading-relaxed"
-                >
-                  <div className="flex items-center justify-between gap-2 font-mono text-[11px] text-[#6d5637] tabular-nums">
-                    <span>
-                      {t(lang, 'roundLabel')} {entry.round} · {formatTimeOfDay(lang, entry.timeOfDay)}
-                    </span>
-                    <span
-                      className={`text-[10px] font-semibold uppercase ${
-                        scope === 'global' ? 'text-[#7c2d12]' : 'text-[#5b4630]'
-                      }`}
-                    >
-                      {scope === 'global' ? t(lang, 'chronicleTabGlobal') : t(lang, 'chronicleTabLocal')}
-                    </span>
-                  </div>
-                  <div
-                    className={
-                      entry.type === 'seal'
-                        ? 'text-[#7c2d12] font-semibold'
-                        : entry.type === 'combat'
-                          ? 'text-[#7f1d1d] font-medium'
-                          : 'text-[#241b11]'
-                    }
+        {/* Right Column: Live Room Chat (online) + Aged Parchment Chronicle Log */}
+        <div className="space-y-4 lg:col-span-2 xl:col-span-1 flex flex-col">
+          {onlineContext && (
+            <RoomChatPanel
+              lang={lang}
+              messages={onlineContext.chatMessages}
+              mySlotId={onlineContext.mySlotId}
+              onSendMessage={onlineContext.onSendChat}
+              compact
+            />
+          )}
+          <aside className="parchment-panel rounded-lg p-5 flex flex-col max-h-[720px] flex-1">
+            <h3 className="font-display text-2xl font-bold text-[#241b11]">
+              {t(lang, 'chronicleTitle')}
+            </h3>
+            <div className="mt-2 flex flex-wrap gap-1">
+              {([
+                { id: 'all', label: t(lang, 'chronicleTabAll'), icon: null },
+                { id: 'global', label: t(lang, 'chronicleTabGlobal'), icon: <Globe className="h-3 w-3" aria-hidden="true" /> },
+                { id: 'local', label: t(lang, 'chronicleTabLocal'), icon: <MapPin className="h-3 w-3" aria-hidden="true" /> },
+              ] as const).map((tab) => {
+                const active = chronicleFilter === tab.id;
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setChronicleFilter(tab.id)}
+                    className={`inline-flex items-center gap-1 rounded border px-2.5 py-1 text-[11px] font-semibold transition-colors ${
+                      active
+                        ? 'border-[#6d421a] bg-[#2c1f12] text-amber-100'
+                        : 'border-[#9d7f4e]/50 bg-[#f6eedb]/70 text-[#4c3820] hover:bg-[#e9dcc0]'
+                    }`}
                   >
-                    {pickText(lang, entry.text)}
+                    {tab.icon}
+                    {tab.label}
+                  </button>
+                );
+              })}
+            </div>
+            <OrnamentalDivider darkInk />
+            <div className="flex-1 overflow-y-auto space-y-2.5 pr-1">
+              {filteredChronicle.map((entry) => {
+                const scope = entry.scope ?? inferChronicleScope(entry.type, entry.playerId);
+                return (
+                  <div
+                    key={entry.id}
+                    className="border-b border-[#9d7f4e]/35 pb-2 text-xs leading-relaxed"
+                  >
+                    <div className="flex items-center justify-between gap-2 font-mono text-[11px] text-[#6d5637] tabular-nums">
+                      <span>
+                        {t(lang, 'roundLabel')} {entry.round} · {formatTimeOfDay(lang, entry.timeOfDay)}
+                      </span>
+                      <span
+                        className={`text-[10px] font-semibold uppercase ${
+                          scope === 'global' ? 'text-[#7c2d12]' : 'text-[#5b4630]'
+                        }`}
+                      >
+                        {scope === 'global' ? t(lang, 'chronicleTabGlobal') : t(lang, 'chronicleTabLocal')}
+                      </span>
+                    </div>
+                    <div
+                      className={
+                        entry.type === 'seal'
+                          ? 'text-[#7c2d12] font-semibold'
+                          : entry.type === 'combat'
+                            ? 'text-[#7f1d1d] font-medium'
+                            : 'text-[#241b11]'
+                      }
+                    >
+                      {pickText(lang, entry.text)}
+                    </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
-        </aside>
+                );
+              })}
+            </div>
+          </aside>
+        </div>
       </div>
       </main>
     </>

@@ -23,18 +23,44 @@ const { pickText, t } = LocalizationManager;
 interface TitleMenuProps {
   lang: Language;
   recentSave: SaveSlotSummary | null;
+  initialRoomCode?: string;
+  onlineError?: string | null;
+  onlineBusy?: boolean;
   onStartGame: (config: NewGameConfig) => void;
   onLoadRecentSave: (saveId: string) => void;
+  onCreateOnlineRoom: (payload: {
+    hostName: string;
+    heroId: string;
+    maxPlayers: number;
+    aiDifficulty: AiDifficulty;
+  }) => Promise<void>;
+  onJoinOnlineRoom: (payload: {
+    roomCode: string;
+    playerName: string;
+    heroId: string;
+    reconnectCode?: string;
+  }) => Promise<void>;
 }
 
 export const TitleMenu: React.FC<TitleMenuProps> = ({
   lang,
   recentSave,
+  initialRoomCode = '',
+  onlineError = null,
+  onlineBusy = false,
   onStartGame,
   onLoadRecentSave,
+  onCreateOnlineRoom,
+  onJoinOnlineRoom,
 }) => {
-  const [mode, setMode] = useState<GameMode>('solo_ai');
-  const [totalPlayers, setTotalPlayers] = useState<number>(2);
+  const [mode, setMode] = useState<GameMode>(initialRoomCode ? 'online' : 'solo_ai');
+  const [onlineTab, setOnlineTab] = useState<'create' | 'join'>(
+    initialRoomCode ? 'join' : 'create'
+  );
+  const [onlineRoomCode, setOnlineRoomCode] = useState<string>(initialRoomCode);
+  const [onlinePlayerName, setOnlinePlayerName] = useState<string>('');
+  const [onlineReconnectCode, setOnlineReconnectCode] = useState<string>('');
+  const [totalPlayers, setTotalPlayers] = useState<number>(initialRoomCode ? 4 : 2);
   const [aiDifficulty, setAiDifficulty] = useState<AiDifficulty>('normal');
   const [aiStyles, setAiStyles] = useState<AiBehaviorStyle[]>([
     'conqueror',
@@ -108,6 +134,26 @@ export const TitleMenu: React.FC<TitleMenuProps> = ({
 
   const handleStart = (e: React.FormEvent) => {
     e.preventDefault();
+    if (mode === 'online') {
+      const heroId = selectedHeroes[0] ?? HEROES[0].id;
+      if (onlineTab === 'create') {
+        void onCreateOnlineRoom({
+          hostName: onlinePlayerName.trim() || playerNames[0]?.trim() || 'Hero',
+          heroId,
+          maxPlayers: totalPlayers,
+          aiDifficulty,
+        });
+      } else {
+        void onJoinOnlineRoom({
+          roomCode: onlineRoomCode.trim(),
+          playerName: onlinePlayerName.trim() || playerNames[0]?.trim() || 'Adventurer',
+          heroId,
+          reconnectCode: onlineReconnectCode.trim() || undefined,
+        });
+      }
+      return;
+    }
+
     const parsedSeed = seedInput.trim() ? Number(seedInput.trim()) : undefined;
     const playerConfigs = Array.from({ length: totalPlayers }, (_, idx) => {
       const heroId = selectedHeroes[idx] ?? HEROES[idx % HEROES.length].id;
@@ -225,7 +271,7 @@ export const TitleMenu: React.FC<TitleMenuProps> = ({
               <h2 className="font-display text-2xl font-bold text-stone-100">
                 {t(lang, 'newGame')}
               </h2>
-              <div className="flex items-center gap-1 rounded-md bg-[#111317] p-1 border border-stone-800">
+              <div className="flex flex-wrap items-center gap-1 rounded-md bg-[#111317] p-1 border border-stone-800">
                 <button
                   type="button"
                   onClick={() => handleModeChange('solo_ai')}
@@ -248,217 +294,411 @@ export const TitleMenu: React.FC<TitleMenuProps> = ({
                 >
                   {t(lang, 'modeHotseat')}
                 </button>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <div>
-                <label className="block text-xs font-medium text-stone-400 mb-1.5">
-                  {t(lang, 'playerCount')}
-                </label>
-                <div className="flex items-center gap-1.5">
-                  {[1, 2, 3, 4, 5, 6].map((cnt) => (
-                    <button
-                      key={cnt}
-                      type="button"
-                      onClick={() => {
-                        setTotalPlayers(cnt);
-                        if (focusedSlot >= cnt) setFocusedSlot(0);
-                      }}
-                      className={`flex-1 rounded border py-2 text-sm font-mono font-semibold tabular-nums transition-colors min-h-[42px] ${
-                        totalPlayers === cnt
-                          ? 'border-amber-500 bg-amber-600/20 text-amber-300'
-                          : 'border-stone-800 bg-[#111317] text-stone-300 hover:border-stone-600'
-                      }`}
-                    >
-                      {cnt}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div>
-                <label
-                  htmlFor="rng-seed-input"
-                  className="block text-xs font-medium text-stone-400 mb-1.5"
+                <button
+                  type="button"
+                  onClick={() => handleModeChange('online')}
+                  className={`rounded px-3 py-2 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 min-h-[36px] ${
+                    mode === 'online'
+                      ? 'bg-amber-600 text-stone-950'
+                      : 'text-stone-300 hover:text-stone-100'
+                  }`}
                 >
-                  {t(lang, 'seedLabel')}
-                </label>
-                <input
-                  id="rng-seed-input"
-                  type="number"
-                  value={seedInput}
-                  onChange={(e) => setSeedInput(e.target.value)}
-                  placeholder="20261124"
-                  className="w-full rounded border border-stone-800 bg-[#111317] px-3 py-2 text-sm font-mono text-stone-100 placeholder:text-stone-600 min-h-[42px] focus:border-amber-500 focus:outline-none"
-                />
+                  {t(lang, 'modeOnline')}
+                </button>
               </div>
             </div>
 
-            {mode === 'solo_ai' && totalPlayers >= 2 && (
-              <div>
-                <label className="block text-xs font-medium text-stone-400 mb-1.5">
-                  {t(lang, 'aiDifficultyLabel')}
-                </label>
-                <div className="grid grid-cols-3 gap-2">
-                  {([
-                    { id: 'easy', label: t(lang, 'aiEasyLabel') },
-                    { id: 'normal', label: t(lang, 'aiNormalLabel') },
-                    { id: 'hard', label: t(lang, 'aiHardLabel') },
-                  ] as const).map((diff) => (
-                    <button
-                      key={diff.id}
-                      type="button"
-                      onClick={() => setAiDifficulty(diff.id)}
-                      className={`rounded border py-2 text-xs font-semibold transition-colors min-h-[38px] ${
-                        aiDifficulty === diff.id
-                          ? 'border-amber-500 bg-amber-600/20 text-amber-300'
-                          : 'border-stone-800 bg-[#111317] text-stone-300 hover:border-stone-600'
-                      }`}
-                    >
-                      {diff.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Player Slots */}
-            <div className="space-y-3">
-              {Array.from({ length: totalPlayers }, (_, idx) => {
-                const isAI = mode === 'solo_ai' && idx > 0;
-                const hero = HERO_MAP.get(selectedHeroes[idx]) ?? HEROES[idx];
-                const isFocused = focusedSlot === idx;
-                return (
-                  <div
-                    key={idx}
-                    onClick={() => {
-                      setFocusedSlot(idx);
-                      setInspectedHeroId(hero.id);
-                    }}
-                    className={`grid grid-cols-1 gap-3 rounded-md border p-3.5 sm:grid-cols-12 sm:items-center cursor-pointer transition-colors ${
-                      isFocused
-                        ? 'border-amber-500/70 bg-[#171b23]'
-                        : 'border-stone-800/90 bg-[#12151b] hover:border-stone-700'
+            {mode === 'online' ? (
+              <div className="space-y-4">
+                <div className="flex items-center gap-1 rounded-md border border-stone-800 bg-[#111317] p-1">
+                  <button
+                    type="button"
+                    onClick={() => setOnlineTab('create')}
+                    className={`flex-1 rounded px-3 py-2 text-xs font-semibold transition-colors min-h-[38px] ${
+                      onlineTab === 'create'
+                        ? 'bg-amber-600 text-stone-950'
+                        : 'text-stone-300 hover:text-stone-100'
                     }`}
                   >
-                    <div className="sm:col-span-4 flex items-center gap-3">
-                      <HeroAvatar
-                        src={hero.portraitPath}
-                        alt={pickText(lang, hero.name)}
-                        className="h-14 w-14 shrink-0 rounded-md border border-amber-700/40 object-cover"
-                        fallbackLabel={pickText(lang, hero.className)}
-                      />
-                      <div className="min-w-0 flex-1">
-                        <div className="text-xs font-medium text-stone-400 mb-1">
-                          {t(lang, 'playerLabel')} {idx + 1} ·{' '}
-                          <span className={isAI ? 'text-amber-400' : 'text-emerald-400'}>
-                            {isAI ? t(lang, 'aiLabel') : t(lang, 'humanLabel')}
-                          </span>
-                        </div>
-                        <input
-                          type="text"
-                          value={playerNames[idx] ?? ''}
-                          onChange={(e) => handleNameChange(idx, e.target.value)}
-                          onClick={(e) => e.stopPropagation()}
-                          className="w-full rounded border border-stone-800 bg-[#171b22] px-2.5 py-1.5 text-sm text-stone-100 min-h-[38px] focus:border-amber-500 focus:outline-none"
-                        />
-                      </div>
-                    </div>
+                    {t(lang, 'onlineCreateRoomTab')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setOnlineTab('join')}
+                    className={`flex-1 rounded px-3 py-2 text-xs font-semibold transition-colors min-h-[38px] ${
+                      onlineTab === 'join'
+                        ? 'bg-amber-600 text-stone-950'
+                        : 'text-stone-300 hover:text-stone-100'
+                    }`}
+                  >
+                    {t(lang, 'onlineJoinRoomTab')}
+                  </button>
+                </div>
 
-                    <div className="sm:col-span-4 space-y-2">
-                      <div>
-                        <label className="block text-xs text-stone-400 mb-1">
-                          {t(lang, 'chooseHero')}
-                        </label>
-                        <select
-                          value={selectedHeroes[idx]}
-                          onChange={(e) => handleHeroChange(idx, e.target.value)}
-                          onClick={(e) => e.stopPropagation()}
-                          className="w-full rounded border border-stone-800 bg-[#171b22] px-2.5 py-1.5 text-sm text-stone-100 min-h-[38px] focus:border-amber-500 focus:outline-none"
-                        >
-                          {HEROES.map((h) => (
-                            <option key={h.id} value={h.id}>
-                              {pickText(lang, h.className)} — {pickText(lang, h.name)}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      {isAI && (
-                        <div>
-                          <label className="block text-[11px] text-stone-400 mb-1">
-                            {t(lang, 'aiStyleLabel')}
-                          </label>
-                          <select
-                            value={aiStyles[idx]}
-                            onChange={(e) =>
-                              handleStyleChange(idx, e.target.value as AiBehaviorStyle)
-                            }
-                            onClick={(e) => e.stopPropagation()}
-                            className="w-full rounded border border-stone-800 bg-[#12151b] px-2 py-1 text-xs text-amber-200 min-h-[34px] focus:border-amber-500 focus:outline-none"
+                {onlineError && (
+                  <div
+                    role="alert"
+                    className="rounded border border-rose-700/70 bg-rose-950/50 px-3 py-2 text-xs text-rose-200"
+                  >
+                    {onlineError}
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <div>
+                    <label
+                      htmlFor="online-player-name"
+                      className="block text-xs font-medium text-stone-400 mb-1.5"
+                    >
+                      {t(lang, 'onlineYourNameLabel')}
+                    </label>
+                    <input
+                      id="online-player-name"
+                      type="text"
+                      maxLength={32}
+                      value={onlinePlayerName}
+                      onChange={(e) => setOnlinePlayerName(e.target.value)}
+                      placeholder={playerNames[0]}
+                      className="w-full rounded border border-stone-800 bg-[#111317] px-3 py-2 text-sm text-stone-100 placeholder:text-stone-600 min-h-[42px] focus:border-amber-500 focus:outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-stone-400 mb-1.5">
+                      {t(lang, 'chooseHero')}
+                    </label>
+                    <select
+                      value={selectedHeroes[0]}
+                      onChange={(e) => handleHeroChange(0, e.target.value)}
+                      className="w-full rounded border border-stone-800 bg-[#111317] px-3 py-2 text-sm text-stone-100 min-h-[42px] focus:border-amber-500 focus:outline-none"
+                    >
+                      {HEROES.map((h) => (
+                        <option key={h.id} value={h.id}>
+                          {pickText(lang, h.className)} — {pickText(lang, h.name)}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                {onlineTab === 'create' ? (
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <div>
+                      <label className="block text-xs font-medium text-stone-400 mb-1.5">
+                        {t(lang, 'playerCount')}
+                      </label>
+                      <div className="flex items-center gap-1.5">
+                        {[1, 2, 3, 4, 5, 6].map((cnt) => (
+                          <button
+                            key={cnt}
+                            type="button"
+                            onClick={() => setTotalPlayers(cnt)}
+                            className={`flex-1 rounded border py-2 text-sm font-mono font-semibold tabular-nums transition-colors min-h-[42px] ${
+                              totalPlayers === cnt
+                                ? 'border-amber-500 bg-amber-600/20 text-amber-300'
+                                : 'border-stone-800 bg-[#111317] text-stone-300 hover:border-stone-600'
+                            }`}
                           >
-                            <option value="conqueror">{t(lang, 'aiStyleConqueror')}</option>
-                            <option value="scholar">{t(lang, 'aiStyleScholar')}</option>
-                            <option value="merchant_tactician">{t(lang, 'aiStyleTactician')}</option>
-                            <option value="warden">{t(lang, 'aiStyleWarden')}</option>
-                          </select>
-                        </div>
-                      )}
+                            {cnt}
+                          </button>
+                        ))}
+                      </div>
                     </div>
 
-                    <div className="sm:col-span-4 text-xs text-stone-400 space-y-1">
-                      <div className="flex flex-wrap items-center gap-2.5 font-mono tabular-nums text-stone-200">
-                        <span className="inline-flex items-center gap-1" title={t(lang, 'hpLabel')}>
-                          <Heart className="h-3.5 w-3.5 text-rose-400" aria-hidden="true" />
-                          {hero.baseStats.hp}
-                        </span>
-                        <span className="inline-flex items-center gap-1" title={t(lang, 'strengthLabel')}>
-                          <Sword className="h-3.5 w-3.5 text-amber-400" aria-hidden="true" />
-                          {hero.baseStats.strength}
-                        </span>
-                        <span className="inline-flex items-center gap-1" title={t(lang, 'intellectLabel')}>
-                          <BookOpen className="h-3.5 w-3.5 text-sky-400" aria-hidden="true" />
-                          {hero.baseStats.intellect}
-                        </span>
-                        <span className="inline-flex items-center gap-1" title={t(lang, 'fateLabel')}>
-                          <Compass className="h-3.5 w-3.5 text-emerald-400" aria-hidden="true" />
-                          {hero.baseStats.fate}
-                        </span>
-                        <span className="inline-flex items-center gap-1" title={t(lang, 'goldLabel')}>
-                          <Coins className="h-3.5 w-3.5 text-amber-300" aria-hidden="true" />
-                          {hero.baseStats.gold}
-                        </span>
-                        <span className="inline-flex items-center gap-1" title={t(lang, 'experienceLabel')}>
-                          <Sparkles className="h-3.5 w-3.5 text-violet-300" aria-hidden="true" />
-                          {hero.baseStats.experience}
-                        </span>
-                      </div>
-                      <div className="text-stone-400 line-clamp-1">
-                        {pickText(lang, hero.abilityName)}: {pickText(lang, hero.abilityDescription)}
+                    <div>
+                      <label className="block text-xs font-medium text-stone-400 mb-1.5">
+                        {t(lang, 'aiDifficultyLabel')}
+                      </label>
+                      <div className="grid grid-cols-3 gap-2">
+                        {([
+                          { id: 'easy', label: t(lang, 'aiEasyLabel') },
+                          { id: 'normal', label: t(lang, 'aiNormalLabel') },
+                          { id: 'hard', label: t(lang, 'aiHardLabel') },
+                        ] as const).map((diff) => (
+                          <button
+                            key={diff.id}
+                            type="button"
+                            onClick={() => setAiDifficulty(diff.id)}
+                            className={`rounded border py-2 text-xs font-semibold transition-colors min-h-[42px] ${
+                              aiDifficulty === diff.id
+                                ? 'border-amber-500 bg-amber-600/20 text-amber-300'
+                                : 'border-stone-800 bg-[#111317] text-stone-300 hover:border-stone-600'
+                            }`}
+                          >
+                            {diff.label}
+                          </button>
+                        ))}
                       </div>
                     </div>
                   </div>
-                );
-              })}
-            </div>
+                ) : (
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <div>
+                      <label
+                        htmlFor="online-room-code"
+                        className="block text-xs font-medium text-stone-400 mb-1.5"
+                      >
+                        {t(lang, 'onlineRoomCodeLabel')}
+                      </label>
+                      <input
+                        id="online-room-code"
+                        type="text"
+                        required
+                        maxLength={10}
+                        value={onlineRoomCode}
+                        onChange={(e) => setOnlineRoomCode(e.target.value.toUpperCase())}
+                        placeholder="A7K9M2"
+                        className="w-full rounded border border-stone-800 bg-[#111317] px-3 py-2 text-sm font-mono uppercase tracking-widest text-amber-300 placeholder:text-stone-600 min-h-[42px] focus:border-amber-500 focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label
+                        htmlFor="online-reconnect-code"
+                        className="block text-xs font-medium text-stone-400 mb-1.5"
+                      >
+                        {t(lang, 'onlineReconnectCodeLabel')}
+                      </label>
+                      <input
+                        id="online-reconnect-code"
+                        type="text"
+                        maxLength={12}
+                        value={onlineReconnectCode}
+                        onChange={(e) => setOnlineReconnectCode(e.target.value.toUpperCase())}
+                        placeholder="4F9A1C2B"
+                        className="w-full rounded border border-stone-800 bg-[#111317] px-3 py-2 text-sm font-mono uppercase tracking-wider text-emerald-300 placeholder:text-stone-600 min-h-[42px] focus:border-amber-500 focus:outline-none"
+                      />
+                    </div>
+                  </div>
+                )}
 
-            <div className="pt-2 flex flex-wrap items-center justify-between gap-3">
-              <button
-                type="button"
-                onClick={() => onStartGame(TEST_SCENARIO_PRESETS[0].config)}
-                title={pickText(lang, TEST_SCENARIO_PRESETS[0].description)}
-                className="rounded border border-stone-700 bg-stone-900 px-4 py-2.5 text-xs font-medium text-stone-300 hover:border-amber-500/60 hover:text-amber-200 transition-colors min-h-[44px]"
-              >
-                {t(lang, 'quickTestStart')}
-              </button>
+                <p className="text-xs text-stone-400">{t(lang, 'onlineServerAuthoritativeNote')}</p>
 
-              <button
-                type="submit"
-                className="w-full sm:w-auto rounded bg-amber-600 px-7 py-3 text-sm font-bold text-stone-950 hover:bg-amber-500 transition-colors whitespace-nowrap min-h-[46px] focus-visible:outline-2 focus-visible:outline-amber-300"
-              >
-                {t(lang, 'startGame')}
-              </button>
-            </div>
+                <div className="pt-2 flex justify-end">
+                  <button
+                    type="submit"
+                    disabled={onlineBusy || (onlineTab === 'join' && !onlineRoomCode.trim())}
+                    className="w-full sm:w-auto rounded bg-amber-600 px-7 py-3 text-sm font-bold text-stone-950 hover:bg-amber-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors whitespace-nowrap min-h-[46px]"
+                  >
+                    {onlineTab === 'create'
+                      ? t(lang, 'onlineCreateAction')
+                      : onlineReconnectCode.trim()
+                        ? t(lang, 'onlineReconnectAction')
+                        : t(lang, 'onlineJoinAction')}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <div>
+                    <label className="block text-xs font-medium text-stone-400 mb-1.5">
+                      {t(lang, 'playerCount')}
+                    </label>
+                    <div className="flex items-center gap-1.5">
+                      {[1, 2, 3, 4, 5, 6].map((cnt) => (
+                        <button
+                          key={cnt}
+                          type="button"
+                          onClick={() => {
+                            setTotalPlayers(cnt);
+                            if (focusedSlot >= cnt) setFocusedSlot(0);
+                          }}
+                          className={`flex-1 rounded border py-2 text-sm font-mono font-semibold tabular-nums transition-colors min-h-[42px] ${
+                            totalPlayers === cnt
+                              ? 'border-amber-500 bg-amber-600/20 text-amber-300'
+                              : 'border-stone-800 bg-[#111317] text-stone-300 hover:border-stone-600'
+                          }`}
+                        >
+                          {cnt}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label
+                      htmlFor="rng-seed-input"
+                      className="block text-xs font-medium text-stone-400 mb-1.5"
+                    >
+                      {t(lang, 'seedLabel')}
+                    </label>
+                    <input
+                      id="rng-seed-input"
+                      type="number"
+                      value={seedInput}
+                      onChange={(e) => setSeedInput(e.target.value)}
+                      placeholder="20261124"
+                      className="w-full rounded border border-stone-800 bg-[#111317] px-3 py-2 text-sm font-mono text-stone-100 placeholder:text-stone-600 min-h-[42px] focus:border-amber-500 focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                {mode === 'solo_ai' && totalPlayers >= 2 && (
+                  <div>
+                    <label className="block text-xs font-medium text-stone-400 mb-1.5">
+                      {t(lang, 'aiDifficultyLabel')}
+                    </label>
+                    <div className="grid grid-cols-3 gap-2">
+                      {([
+                        { id: 'easy', label: t(lang, 'aiEasyLabel') },
+                        { id: 'normal', label: t(lang, 'aiNormalLabel') },
+                        { id: 'hard', label: t(lang, 'aiHardLabel') },
+                      ] as const).map((diff) => (
+                        <button
+                          key={diff.id}
+                          type="button"
+                          onClick={() => setAiDifficulty(diff.id)}
+                          className={`rounded border py-2 text-xs font-semibold transition-colors min-h-[38px] ${
+                            aiDifficulty === diff.id
+                              ? 'border-amber-500 bg-amber-600/20 text-amber-300'
+                              : 'border-stone-800 bg-[#111317] text-stone-300 hover:border-stone-600'
+                          }`}
+                        >
+                          {diff.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Player Slots */}
+                <div className="space-y-3">
+                  {Array.from({ length: totalPlayers }, (_, idx) => {
+                    const isAI = mode === 'solo_ai' && idx > 0;
+                    const hero = HERO_MAP.get(selectedHeroes[idx]) ?? HEROES[idx];
+                    const isFocused = focusedSlot === idx;
+                    return (
+                      <div
+                        key={idx}
+                        onClick={() => {
+                          setFocusedSlot(idx);
+                          setInspectedHeroId(hero.id);
+                        }}
+                        className={`grid grid-cols-1 gap-3 rounded-md border p-3.5 sm:grid-cols-12 sm:items-center cursor-pointer transition-colors ${
+                          isFocused
+                            ? 'border-amber-500/70 bg-[#171b23]'
+                            : 'border-stone-800/90 bg-[#12151b] hover:border-stone-700'
+                        }`}
+                      >
+                        <div className="sm:col-span-4 flex items-center gap-3">
+                          <HeroAvatar
+                            src={hero.portraitPath}
+                            alt={pickText(lang, hero.name)}
+                            className="h-14 w-14 shrink-0 rounded-md border border-amber-700/40 object-cover"
+                            fallbackLabel={pickText(lang, hero.className)}
+                          />
+                          <div className="min-w-0 flex-1">
+                            <div className="text-xs font-medium text-stone-400 mb-1">
+                              {t(lang, 'playerLabel')} {idx + 1} ·{' '}
+                              <span className={isAI ? 'text-amber-400' : 'text-emerald-400'}>
+                                {isAI ? t(lang, 'aiLabel') : t(lang, 'humanLabel')}
+                              </span>
+                            </div>
+                            <input
+                              type="text"
+                              value={playerNames[idx] ?? ''}
+                              onChange={(e) => handleNameChange(idx, e.target.value)}
+                              onClick={(e) => e.stopPropagation()}
+                              className="w-full rounded border border-stone-800 bg-[#171b22] px-2.5 py-1.5 text-sm text-stone-100 min-h-[38px] focus:border-amber-500 focus:outline-none"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="sm:col-span-4 space-y-2">
+                          <div>
+                            <label className="block text-xs text-stone-400 mb-1">
+                              {t(lang, 'chooseHero')}
+                            </label>
+                            <select
+                              value={selectedHeroes[idx]}
+                              onChange={(e) => handleHeroChange(idx, e.target.value)}
+                              onClick={(e) => e.stopPropagation()}
+                              className="w-full rounded border border-stone-800 bg-[#171b22] px-2.5 py-1.5 text-sm text-stone-100 min-h-[38px] focus:border-amber-500 focus:outline-none"
+                            >
+                              {HEROES.map((h) => (
+                                <option key={h.id} value={h.id}>
+                                  {pickText(lang, h.className)} — {pickText(lang, h.name)}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          {isAI && (
+                            <div>
+                              <label className="block text-[11px] text-stone-400 mb-1">
+                                {t(lang, 'aiStyleLabel')}
+                              </label>
+                              <select
+                                value={aiStyles[idx]}
+                                onChange={(e) =>
+                                  handleStyleChange(idx, e.target.value as AiBehaviorStyle)
+                                }
+                                onClick={(e) => e.stopPropagation()}
+                                className="w-full rounded border border-stone-800 bg-[#12151b] px-2 py-1 text-xs text-amber-200 min-h-[34px] focus:border-amber-500 focus:outline-none"
+                              >
+                                <option value="conqueror">{t(lang, 'aiStyleConqueror')}</option>
+                                <option value="scholar">{t(lang, 'aiStyleScholar')}</option>
+                                <option value="merchant_tactician">{t(lang, 'aiStyleTactician')}</option>
+                                <option value="warden">{t(lang, 'aiStyleWarden')}</option>
+                              </select>
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="sm:col-span-4 text-xs text-stone-400 space-y-1">
+                          <div className="flex flex-wrap items-center gap-2.5 font-mono tabular-nums text-stone-200">
+                            <span className="inline-flex items-center gap-1" title={t(lang, 'hpLabel')}>
+                              <Heart className="h-3.5 w-3.5 text-rose-400" aria-hidden="true" />
+                              {hero.baseStats.hp}
+                            </span>
+                            <span className="inline-flex items-center gap-1" title={t(lang, 'strengthLabel')}>
+                              <Sword className="h-3.5 w-3.5 text-amber-400" aria-hidden="true" />
+                              {hero.baseStats.strength}
+                            </span>
+                            <span className="inline-flex items-center gap-1" title={t(lang, 'intellectLabel')}>
+                              <BookOpen className="h-3.5 w-3.5 text-sky-400" aria-hidden="true" />
+                              {hero.baseStats.intellect}
+                            </span>
+                            <span className="inline-flex items-center gap-1" title={t(lang, 'fateLabel')}>
+                              <Compass className="h-3.5 w-3.5 text-emerald-400" aria-hidden="true" />
+                              {hero.baseStats.fate}
+                            </span>
+                            <span className="inline-flex items-center gap-1" title={t(lang, 'goldLabel')}>
+                              <Coins className="h-3.5 w-3.5 text-amber-300" aria-hidden="true" />
+                              {hero.baseStats.gold}
+                            </span>
+                            <span className="inline-flex items-center gap-1" title={t(lang, 'experienceLabel')}>
+                              <Sparkles className="h-3.5 w-3.5 text-violet-300" aria-hidden="true" />
+                              {hero.baseStats.experience}
+                            </span>
+                          </div>
+                          <div className="text-stone-400 line-clamp-1">
+                            {pickText(lang, hero.abilityName)}: {pickText(lang, hero.abilityDescription)}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="pt-2 flex flex-wrap items-center justify-between gap-3">
+                  <button
+                    type="button"
+                    onClick={() => onStartGame(TEST_SCENARIO_PRESETS[0].config)}
+                    title={pickText(lang, TEST_SCENARIO_PRESETS[0].description)}
+                    className="rounded border border-stone-700 bg-stone-900 px-4 py-2.5 text-xs font-medium text-stone-300 hover:border-amber-500/60 hover:text-amber-200 transition-colors min-h-[44px]"
+                  >
+                    {t(lang, 'quickTestStart')}
+                  </button>
+
+                  <button
+                    type="submit"
+                    className="w-full sm:w-auto rounded bg-amber-600 px-7 py-3 text-sm font-bold text-stone-950 hover:bg-amber-500 transition-colors whitespace-nowrap min-h-[46px] focus-visible:outline-2 focus-visible:outline-amber-300"
+                  >
+                    {t(lang, 'startGame')}
+                  </button>
+                </div>
+              </>
+            )}
           </form>
         </section>
       </div>

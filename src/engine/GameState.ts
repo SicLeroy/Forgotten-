@@ -3,8 +3,31 @@ import { GameState, HERO_STAT_LIMITS, PlayerState } from '../types/game';
 
 export type { GameState, PlayerState };
 
+function clonePlainValue<T>(value: T): T {
+  if (value === null || typeof value !== 'object') {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    const out = new Array(value.length);
+    for (let i = 0; i < value.length; i++) {
+      const item = value[i];
+      out[i] = item === undefined ? null : clonePlainValue(item);
+    }
+    return out as unknown as T;
+  }
+  const out: Record<string, unknown> = {};
+  const src = value as Record<string, unknown>;
+  for (const key of Object.keys(src)) {
+    const prop = src[key];
+    if (prop !== undefined) {
+      out[key] = clonePlainValue(prop);
+    }
+  }
+  return out as T;
+}
+
 export function cloneGameState(state: GameState): GameState {
-  return JSON.parse(JSON.stringify(state)) as GameState;
+  return clonePlainValue(state);
 }
 
 export function getActivePlayerFromState(state: GameState): PlayerState {

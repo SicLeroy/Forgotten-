@@ -1,7 +1,8 @@
 import React from 'react';
-import { Music, Volume2, VolumeX } from 'lucide-react';
+import { Music, Volume2, VolumeX, Wifi, WifiOff } from 'lucide-react';
 import { useAudio } from '../App';
 import { t } from '../i18n/translations';
+import { OnlineConnectionStatus } from '../online/OnlineClient';
 import { GamePhase, Language } from '../types/game';
 
 export type ActiveView = 'table' | 'map' | 'inventory' | 'saves';
@@ -13,6 +14,7 @@ interface TopBarProps {
   activeView: ActiveView;
   onChangeView: (view: ActiveView) => void;
   onReturnToTitle: () => void;
+  onlineBadge?: { roomCode: string; status: OnlineConnectionStatus } | null;
 }
 
 export const TopBar: React.FC<TopBarProps> = ({
@@ -22,6 +24,7 @@ export const TopBar: React.FC<TopBarProps> = ({
   activeView,
   onChangeView,
   onReturnToTitle,
+  onlineBadge = null,
 }) => {
   const { musicEnabled, sfxEnabled, volume, toggleMusic, toggleSfx, setVolume } = useAudio();
   const navItems: Array<{ id: ActiveView; label: string }> = [
@@ -34,13 +37,31 @@ export const TopBar: React.FC<TopBarProps> = ({
   return (
     <header className="border-b border-stone-800 bg-[#14171d]">
       <div className="mx-auto flex max-w-[1440px] items-center justify-between gap-3 sm:gap-6 px-4 py-3.5 sm:px-6">
-        <button
-          type="button"
-          onClick={onReturnToTitle}
-          className="font-display text-left text-base sm:text-xl font-bold tracking-wide text-stone-100 hover:text-amber-300 transition-colors min-w-0 truncate focus-visible:outline-2 focus-visible:outline-amber-400"
-        >
-          {t(lang, 'appTitle')}
-        </button>
+        <div className="flex items-center gap-2.5 min-w-0">
+          <button
+            type="button"
+            onClick={onReturnToTitle}
+            className="font-display text-left text-base sm:text-xl font-bold tracking-wide text-stone-100 hover:text-amber-300 transition-colors min-w-0 truncate focus-visible:outline-2 focus-visible:outline-amber-400"
+          >
+            {t(lang, 'appTitle')}
+          </button>
+          {onlineBadge && (
+            <span
+              className={`hidden sm:inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[11px] font-mono font-semibold shrink-0 ${
+                onlineBadge.status === 'connected'
+                  ? 'border-emerald-700/60 bg-emerald-950/40 text-emerald-300'
+                  : 'border-amber-700/60 bg-amber-950/40 text-amber-300'
+              }`}
+            >
+              {onlineBadge.status === 'connected' ? (
+                <Wifi className="h-3 w-3" aria-hidden="true" />
+              ) : (
+                <WifiOff className="h-3 w-3" aria-hidden="true" />
+              )}
+              {onlineBadge.roomCode}
+            </span>
+          )}
+        </div>
 
         <nav
           aria-label="Primary navigation"

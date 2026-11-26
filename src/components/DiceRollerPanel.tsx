@@ -11,6 +11,7 @@ interface DiceRollerPanelProps {
   state: GameState;
   onRerollMovementDice: () => void;
   onRerollEncounterCheck: () => void;
+  isMyTurn?: boolean;
 }
 
 const PIP_COORDS: Record<number, Array<[number, number]>> = {
@@ -101,6 +102,7 @@ export const DiceRollerPanel: React.FC<DiceRollerPanelProps> = ({
   state,
   onRerollMovementDice,
   onRerollEncounterCheck,
+  isMyTurn = true,
 }) => {
   const [historyOpen, setHistoryOpen] = useState(false);
   const activePlayer = getActivePlayer(state);
@@ -111,7 +113,7 @@ export const DiceRollerPanel: React.FC<DiceRollerPanelProps> = ({
   const animKey = `${latest?.id ?? 'init'}_${latest?.rerolled ? 'r' : 'n'}_${displayedFace ?? 0}`;
 
   const isMovementRerollContext =
-    !activePlayer.isAI && state.turnPhase === 'MOVING' && state.movement !== null;
+    !activePlayer.isAI && isMyTurn && state.turnPhase === 'MOVING' && state.movement !== null;
   const movementMovedAlready =
     isMovementRerollContext &&
     (state.movement!.pathTaken.length > 1 ||
@@ -124,6 +126,7 @@ export const DiceRollerPanel: React.FC<DiceRollerPanelProps> = ({
 
   const isEncounterRerollContext =
     !activePlayer.isAI &&
+    isMyTurn &&
     state.turnPhase === 'ENCOUNTER' &&
     state.encounter !== null &&
     typeof state.encounter.rollResult === 'number';

@@ -5,7 +5,7 @@ export interface LocalizedText {
   en: string;
 }
 
-export type GameMode = 'solo_ai' | 'local_hotseat';
+export type GameMode = 'solo_ai' | 'local_hotseat' | 'online';
 
 export type GamePhase =
   | 'TITLE_MENU'

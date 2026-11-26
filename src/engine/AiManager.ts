@@ -19,7 +19,7 @@ import {
   PlayerState,
 } from '../types/game';
 import { DayNightManager } from './DayNightManager';
-import { computeEquipmentCombatAttack, getActivePlayerFromState } from './GameState';
+import { cloneGameState, computeEquipmentCombatAttack, getActivePlayerFromState } from './GameState';
 import { NavigationGraph } from './NavigationGraph';
 import { NpcManager } from './NpcManager';
 import { RandomManager } from './RandomManager';
@@ -379,7 +379,7 @@ export const AiManager = {
   },
 
   runTurn(state: GameState, api: AiRulesApi): GameState {
-    let current = JSON.parse(JSON.stringify(state)) as GameState;
+    let current = cloneGameState(state);
     const initialActive = getActivePlayerFromState(current);
     if (!initialActive.isAI || current.phase !== 'PLAYING') return current;
 

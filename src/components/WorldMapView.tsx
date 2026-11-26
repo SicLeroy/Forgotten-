@@ -77,6 +77,7 @@ function renderMapWeatherIcon(weather: WeatherType) {
 interface WorldMapViewProps {
   lang: Language;
   state: GameState;
+  isMyTurn?: boolean;
   onRollMovement: () => void;
   onRerollMovementDice?: () => void;
   onStepMove: (locationId: string) => void;
@@ -230,6 +231,7 @@ function getLocationAvailableResources(
 export const WorldMapView: React.FC<WorldMapViewProps> = ({
   lang,
   state,
+  isMyTurn = true,
   onRollMovement,
   onRerollMovementDice,
   onStepMove,
@@ -238,6 +240,7 @@ export const WorldMapView: React.FC<WorldMapViewProps> = ({
   onReturnToTable,
 }) => {
   const activePlayer = getActivePlayer(state);
+  const isInteractionLocked = activePlayer.isAI || !isMyTurn;
   const hero = HERO_MAP.get(activePlayer.heroId)!;
   const activeLoc = LOCATION_MAP.get(activePlayer.locationId)!;
   const [focus, setFocus] = useState<MapFocus>('all');
@@ -419,7 +422,7 @@ export const WorldMapView: React.FC<WorldMapViewProps> = ({
       </div>
 
       {/* Movement Status Bar on Map */}
-      {!activePlayer.isAI && (
+      {!isInteractionLocked && (
         <div className="flex flex-wrap items-center justify-between gap-4 rounded-lg ornate-frame bg-[#15181f] px-4 py-3 text-xs">
           {isMovingPhase && state.movement ? (
             <div className="flex flex-wrap items-center gap-3 text-amber-200 font-medium">
@@ -668,7 +671,7 @@ export const WorldMapView: React.FC<WorldMapViewProps> = ({
                     onBlur={() => setHoveredId((prev) => (prev === loc.id ? null : prev))}
                     onClick={() => {
                       setInspectedId(loc.id);
-                      if (isMovingPhase && isNeighbor && access.allowed && !activePlayer.isAI) {
+                      if (isMovingPhase && isNeighbor && access.allowed && !isInteractionLocked) {
                         onStepMove(loc.id);
                       }
                     }}
@@ -969,7 +972,7 @@ export const WorldMapView: React.FC<WorldMapViewProps> = ({
                       >
                         <Lock className="h-3.5 w-3.5" />
                       </span>
-                    ) : isAdjacentToPlayer && !activePlayer.isAI ? (
+                    ) : isAdjacentToPlayer && !isInteractionLocked ? (
                       isMovingPhase ? (
                         <button
                           type="button"

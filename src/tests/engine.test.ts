@@ -11,7 +11,7 @@ import {
   CARDS,
   HERO_DECK_CARD_IDS,
 } from '../data/cards';
-import { ENEMY_MAP } from '../data/enemies';
+import { ENEMIES, ENEMY_MAP } from '../data/enemies';
 import { HEROES } from '../data/heroes';
 import { LOCATION_MAP, LOCATIONS } from '../data/locations';
 import { NPCS } from '../data/npcs';
@@ -52,6 +52,7 @@ import {
   NpcRole,
   SectorId,
 } from '../types/game';
+import { getEnemyBestiaryIntel } from '../utils/bestiary';
 import { resolveWorldEventVisuals, WORLD_EVENT_VISUAL_MAP } from '../utils/worldEventVisuals';
 
 function runTest(name: string, fn: () => void): void {
@@ -1912,6 +1913,288 @@ runTest('AI system supports 1-6 participants, fair dice across difficulties, dis
   for (const pl of simState.players) {
     assert.ok(pl.hp >= 0 && pl.hp <= pl.maxHp, `${pl.name} HP stayed within valid bounds`);
   }
+});
+
+async function runAsyncTest(name: string, fn: () => Promise<void>): Promise<void> {
+  await fn();
+  console.log(`PASS: ${name}`);
+}
+
+runTest('Local hot-seat mode supports 1-6 human players, turn handoff sequence, and defeated player skipping', () => {
+  for (const count of [1, 2, 3, 4, 5, 6]) {
+    const hotseat = RulesEngine.createNewGame({
+      mode: 'local_hotseat',
+      seed: 3300 + count,
+      playerConfigs: Array.from({ length: count }, (_, idx) => ({
+        name: `LocalP_${idx + 1}`,
+        heroId: HEROES[idx % HEROES.length].id,
+        isAI: false,
+      })),
+    });
+    assert.equal(hotseat.mode, 'local_hotseat');
+    assert.equal(hotseat.players.length, count);
+    assert.equal(hotseat.players.every((p) => !p.isAI), true);
+  }
+
+  // Verify 6-player full round turn handoff & defeated player skip
+  let state = RulesEngine.createNewGame({
+    mode: 'local_hotseat',
+    seed: 445566,
+    playerConfigs: Array.from({ length: 6 }, (_, idx) => ({
+      name: `Hero_${idx + 1}`,
+      heroId: HEROES[idx].id,
+      isAI: false,
+    })),
+  });
+
+  // Mark player #2 (index 1) as defeated
+  state.players[1].isDefeated = true;
+  state.players[1].hp = 0;
+
+  const visitedOrder: number[] = [state.activePlayerIndex];
+  for (let i = 0; i < 5; i++) {
+    const res = GameManager.dispatch(state, { type: 'END_TURN' });
+    assert.equal(res.error, undefined);
+    state = res.state;
+    visitedOrder.push(state.activePlayerIndex);
+  }
+
+  // Should skip index 1 and wrap back to index 0 on round 2
+  assert.deepEqual(visitedOrder, [0, 2, 3, 4, 5, 0], 'Turn handoff queue must cycle 1-6 players skipping defeated');
+  assert.equal(state.round, 2, 'Round increments once all living hot-seat players finish');
+});
+
+await runAsyncTest(
+  'SaveManager handles autosave, manual slots, browser-close resume, 15-field integrity verification, v1->v3 versioning, and error recovery',
+  async () => {
+    const backend = SaveManager.createMemoryBackend();
+    SaveManager.setStorageBackendForTests(backend);
+
+    try {
+      // Build rich 4-player game with all 15 required state dimensions populated
+      let state = RulesEngine.createNewGame({
+        mode: 'local_hotseat',
+        seed: 771122,
+        playerConfigs: [
+          { name: 'Aria', heroId: 'hero_01', isAI: false },
+          { name: 'Bram', heroId: 'hero_02', isAI: false },
+          { name: 'Cora', heroId: 'hero_03', isAI: false },
+          { name: 'Dain', heroId: 'hero_04', isAI: false },
+        ],
+      });
+
+      state.round = 5;
+      DayNightManager.syncState(state);
+      WeatherManager.shiftWeather(state, 'thunderstorm', 2);
+      WorldEventManager.spawnMajorEvent(state, 'major_arcane_storm');
+
+      state.activePlayerIndex = 2;
+      const p = state.players[2];
+      p.locationId = 'loc_44';
+      p.visitedLocationIds = ['loc_01', 'loc_42', 'loc_43', 'loc_44'];
+      p.hp = 6;
+      p.strength = 7;
+      p.intellect = 6;
+      p.fate = 3;
+      p.gold = 95;
+      p.experience = 8;
+      p.seals = ['seal_power', 'seal_wisdom'];
+      p.gateGuardianDefeated = true;
+      p.equipment = { weapon: 'card_002', armor: 'card_026', talisman: null };
+      p.inventory = ['card_046', 'card_047'];
+      p.companions = ['card_111'];
+      p.curses = ['card_136'];
+      p.hand = ['card_048', 'card_053'];
+      p.enemiesSlain = 4;
+
+      // Active enemy state inside combat
+      state = RulesEngine.challengeSealGuardian({
+        ...state,
+        players: state.players.map((pl, i) =>
+          i === 2 ? { ...p, locationId: 'loc_66', actionsRemaining: 2 } : pl
+        ),
+      }).state;
+      assert.equal(state.turnPhase, 'COMBAT');
+      assert.ok(state.combat, 'Active combat enemy state must exist');
+
+      // 1. Autosave & Manual Named Save Slot
+      await SaveManager.saveAuto(state);
+      const manualRec = await SaveManager.saveNewManualSlot(state, 'Before Seal Guardian');
+      assert.equal(manualRec.saveKind, 'manual');
+      assert.equal(manualRec.schemaVersion, SaveManager.SCHEMA_VERSION);
+
+      const summaries = await SaveManager.listSaves();
+      assert.equal(summaries.length, 2, 'Must list both autosave and manual slot');
+      const autoSummary = summaries.find((s) => s.saveKind === 'autosave');
+      const manualSummary = summaries.find((s) => s.saveKind === 'manual');
+      assert.ok(autoSummary && autoSummary.checksumValid === true);
+      assert.ok(manualSummary && manualSummary.checksumValid === true);
+
+      // 2. Resume after simulated browser close (fresh call reading from backend)
+      const resumed = await SaveManager.getResumableSession();
+      assert.ok(resumed && resumed.state, 'Must resume active session after browser reopen');
+      assert.equal(resumed.recovered, false);
+      assert.equal(resumed.report.valid, true);
+      assert.equal(resumed.report.checksumMatched, true);
+
+      const rState = resumed.state;
+      const rp = rState.players[2];
+      assert.equal(rState.round, 5);
+      assert.equal(rState.dayNightPhase, 'night');
+      assert.equal(rState.weather, 'thunderstorm');
+      assert.equal(rState.activeMajorEvents?.[0]?.id, 'major_arcane_storm');
+      assert.equal(rState.activePlayerIndex, 2);
+      assert.equal(rState.turnPhase, 'COMBAT');
+      assert.equal(rState.combat?.enemyId, state.combat?.enemyId);
+      assert.equal(rState.combat?.enemyCurrentHp, state.combat?.enemyCurrentHp);
+      assert.ok(rState.chronicle.length > 0);
+      assert.equal(rp.locationId, 'loc_66');
+      assert.equal(rp.gold, 95);
+      assert.equal(rp.experience, 8);
+      assert.deepEqual(rp.seals, ['seal_power', 'seal_wisdom']);
+      assert.equal(rp.equipment.weapon, 'card_002');
+      assert.deepEqual(rp.companions, ['card_111']);
+      assert.deepEqual(rp.curses, ['card_136']);
+      assert.deepEqual(rp.hand, ['card_048', 'card_053']);
+
+      // 3. Integrity tamper detection + automatic recovery from verified backup
+      await SaveManager.saveGame(
+        { ...state, players: state.players.map((pl, i) => (i === 2 ? { ...pl, gold: 120 } : pl)) },
+        'Manual Check',
+        { saveIdOverride: manualRec.saveId, saveKind: 'manual' }
+      );
+      await SaveManager.corruptSaveRecordForTests(manualRec.saveId, (rec) => ({
+        ...rec,
+        state: {
+          ...rec.state,
+          players: rec.state.players.map((pl, i) => (i === 2 ? { ...pl, gold: 999999 } : pl)),
+        },
+      }));
+
+      const backupRecovered = await SaveManager.loadGameWithReport(manualRec.saveId);
+      assert.ok(backupRecovered.state, 'Corrupted primary save must recover from backup');
+      assert.equal(backupRecovered.recovered, true);
+      assert.equal(backupRecovered.recoverySource, 'backup');
+      assert.equal(backupRecovered.state.players[2].gold, 95, 'Backup snapshot preserves pre-tamper verified state');
+
+      // 4. Structural corruption repair when no valid backup exists
+      const orphanId = 'save_corrupt_orphan';
+      await SaveManager.saveGame(state, 'Orphan', { saveIdOverride: orphanId, saveKind: 'manual' });
+      await backend.deleteBackup(orphanId);
+      await SaveManager.corruptSaveRecordForTests(orphanId, (rec) => ({
+        ...rec,
+        checksum: 'bad-checksum',
+        state: {
+          ...rec.state,
+          weather: 'invalid_weather' as unknown as GameState['weather'],
+          activePlayerIndex: 99,
+          players: rec.state.players.map((pl, idx) =>
+            idx === 0 ? { ...pl, locationId: 'loc_invalid', hp: -5 } : pl
+          ),
+        },
+      }));
+
+      const repairedLoad = await SaveManager.loadGameWithReport(orphanId);
+      assert.ok(repairedLoad.state, 'Structural repair must salvage damaged save without backup');
+      assert.equal(repairedLoad.recovered, true);
+      assert.equal(repairedLoad.recoverySource, 'repaired');
+      assert.equal(repairedLoad.state.weather, 'clear');
+      assert.equal(repairedLoad.state.activePlayerIndex, 1, 'Repaired turn queue skips defeated player 0');
+      assert.equal(repairedLoad.state.players[0].locationId, 'loc_01');
+      assert.equal(repairedLoad.state.players[0].hp, 0);
+
+      // 5. Versioning migration (legacy v1 state with `wisdom` -> v3 schema)
+      const legacyBase = RulesEngine.createNewGame({
+        mode: 'local_hotseat',
+        seed: 889900,
+        playerConfigs: [{ name: 'LegacyMage', heroId: 'hero_02', isAI: false }],
+      });
+      const legacyV1State = {
+        ...legacyBase,
+        saveId: 'save_legacy_v1',
+        version: 1,
+        adventureDeck: undefined,
+        marketCardIds: undefined,
+        dayNightCycleRound: undefined,
+        activeMajorEvents: undefined,
+        players: [
+          {
+            ...legacyBase.players[0],
+            intellect: undefined as unknown as number,
+            wisdom: 6,
+            companions: undefined,
+            curses: undefined,
+          },
+        ],
+      } as unknown as GameState;
+
+      await backend.putSave({
+        saveId: 'save_legacy_v1',
+        label: 'Legacy v1 Save',
+        saveKind: 'manual',
+        schemaVersion: 1,
+        checksum: SaveManager.computeChecksum(legacyV1State),
+        createdAt: Date.now() - 10000,
+        updatedAt: Date.now() - 10000,
+        state: legacyV1State,
+      });
+
+      const migratedLoad = await SaveManager.loadGameWithReport('save_legacy_v1');
+      assert.ok(migratedLoad.state, 'Legacy v1 save must migrate cleanly');
+      assert.equal(migratedLoad.state.version, SaveManager.SCHEMA_VERSION);
+      assert.equal(migratedLoad.report.migratedFromVersion, 1);
+      assert.equal(migratedLoad.state.players[0].intellect, 6, 'Legacy wisdom must migrate to intellect');
+      assert.ok((migratedLoad.state.adventureDeck?.length ?? 0) > 0, 'Migration must populate adventureDeck');
+
+      // 6. Irrecoverable empty players fails cleanly without crashing
+      await backend.putSave({
+        saveId: 'save_fatal_broken',
+        label: 'Broken',
+        saveKind: 'manual',
+        schemaVersion: 3,
+        checksum: '00000000-00000000',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        state: { saveId: 'save_fatal_broken', players: [] } as unknown as GameState,
+      });
+      const brokenLoad = await SaveManager.loadGameWithReport('save_fatal_broken');
+      assert.equal(brokenLoad.state, null);
+      assert.equal(brokenLoad.recoverySource, 'none');
+      assert.ok(brokenLoad.report.fatalErrors.length > 0);
+    } finally {
+      SaveManager.setStorageBackendForTests(null);
+    }
+  }
+);
+
+runTest('Bestiary intel extracts strengths, weaknesses, and tactical recommendations for all enemies', () => {
+  assert.ok(ENEMIES.length >= 15);
+  for (const enemy of ENEMIES) {
+    const intel = getEnemyBestiaryIntel(enemy.id);
+    assert.ok(intel, `Missing bestiary intel for ${enemy.id}`);
+    assert.ok(intel.strengths.length >= 1, `${enemy.id} must list strengths`);
+    assert.ok(intel.weaknesses.length >= 1, `${enemy.id} must list weaknesses`);
+    assert.ok(intel.description.uk.length > 0 && intel.description.en.length > 0);
+  }
+
+  const golemIntel = getEnemyBestiaryIntel('enemy_r1_golem')!;
+  assert.equal(golemIntel.recommendedApproach, 'magic', 'Stone Armor golem should recommend magic');
+  assert.ok(golemIntel.weaknesses.some((w) => w.en.includes('Magic')));
+
+  const wraithIntel = getEnemyBestiaryIntel('enemy_r2_wraith')!;
+  assert.equal(wraithIntel.recommendedApproach, 'physical', 'Arcane Ward wraith should recommend physical');
+  assert.ok(wraithIntel.weaknesses.some((w) => w.en.includes('Physical')));
+
+  const customIntel = getEnemyBestiaryIntel('card_enemy_custom', {
+    name: { uk: 'Болотний троль', en: 'Bog Troll' },
+    tier: 'minion',
+    maxHp: 12,
+    attack: 6,
+    intellect: 1,
+    defense: 1,
+  });
+  assert.ok(customIntel);
+  assert.equal(customIntel.recommendedApproach, 'magic');
 });
 
 console.log('ALL TESTS PASSED SUCCESSFULLY.');

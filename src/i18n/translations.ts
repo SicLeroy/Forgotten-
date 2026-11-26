@@ -26,7 +26,6 @@ const UI_STRINGS = {
   startGame: { uk: 'Почати пригоду', en: 'Start Game' },
   continueButton: { uk: 'Продовжити', en: 'Continue' },
   continueSaved: { uk: 'Продовжити останню гру', en: 'Continue Last Save' },
-  quickTestStart: { uk: 'Тестовий запуск', en: 'Test Preset' },
   playAgain: { uk: 'Зіграти знову', en: 'Play Again' },
   gameMode: { uk: 'Режим гри', en: 'Game Mode' },
   modeSoloAi: { uk: 'Одиночна гра проти ШІ', en: 'Solo vs AI' },

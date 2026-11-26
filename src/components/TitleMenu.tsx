@@ -3,7 +3,6 @@ import { BookOpen, Coins, Compass, Heart, Shield, Sparkles, Sword } from 'lucide
 import { CARD_MAP } from '../data/cards';
 import { HEROES, HERO_MAP } from '../data/heroes';
 import { REGIONS } from '../data/regions';
-import { TEST_SCENARIO_PRESETS } from '../data/testFixtures';
 import { AiManager } from '../engine/AiManager';
 import { LocalizationManager } from '../i18n/LocalizationManager';
 import { checkOnlineServerAvailable } from '../online/OnlineClient';
@@ -705,16 +704,7 @@ export const TitleMenu: React.FC<TitleMenuProps> = ({
                   })}
                 </div>
 
-                <div className="pt-2 flex flex-wrap items-center justify-between gap-3">
-                  <button
-                    type="button"
-                    onClick={() => onStartGame(TEST_SCENARIO_PRESETS[0].config)}
-                    title={pickText(lang, TEST_SCENARIO_PRESETS[0].description)}
-                    className="rounded border border-stone-700 bg-stone-900 px-4 py-2.5 text-xs font-medium text-stone-300 hover:border-amber-500/60 hover:text-amber-200 transition-colors min-h-[44px]"
-                  >
-                    {t(lang, 'quickTestStart')}
-                  </button>
-
+                <div className="pt-2 flex justify-end">
                   <button
                     type="submit"
                     className="w-full sm:w-auto rounded bg-amber-600 px-7 py-3 text-sm font-bold text-stone-950 hover:bg-amber-500 transition-colors whitespace-nowrap min-h-[46px] focus-visible:outline-2 focus-visible:outline-amber-300"
